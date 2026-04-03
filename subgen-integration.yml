@@ -1,0 +1,41 @@
+name: Subgen
+description: Generates subtitles for scenes via Subgen webhook integration
+version: 3.3.0
+url: https://github.com/McCloudS/subgen
+interface: raw
+
+# Python backend script
+exec:
+  - python
+  - "{pluginDir}/subgen-integration.py"
+
+# UI injection
+ui:
+  javascript:
+    - subgen-integration.js
+
+# Plugin tasks (callable from JS)
+tasks:
+  - name: Generate Subtitles
+    description: Generate subtitles for a scene using Subgen
+    defaultArgs:
+      mode: generate_subtitles
+
+# Configuration settings
+settings:
+  subgenWebhookUrl:
+    displayName: Subgen Webhook URL
+    description: "The URL to your Subgen webhook endpoint (default: http://subgen:9000)"
+    type: STRING
+  debugLogging:
+    displayName: Debug Logging
+    description: "Enable verbose debug logging to browser console"
+    type: BOOLEAN
+  autoFixPipeIssues:
+    displayName: Auto-fix Pipe Compatibility Issues
+    description: "Automatically remux MP4 files that fail ffmpeg pipe compatibility check (recommended)"
+    type: BOOLEAN
+  createBackupFiles:
+    displayName: Create Backup Files
+    description: "Create .bak backup of original files before remuxing (for testing/safety)"
+    type: BOOLEAN
