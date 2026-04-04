@@ -3,7 +3,7 @@
     
     // ════════════════════════════════════════════════════════════════
     // SUBGEN INTEGRATION PLUGIN FOR STASHAPP
-    // Version: 3.3.0 - Fixed Subtitle Editor (using runPluginOperation)
+    // Version: 3.4.0 - Added Translate to English setting (auto-detect language)
     // ════════════════════════════════════════════════════════════════
     
     // Plugin settings
@@ -11,6 +11,7 @@
     let CUSTOM_SUBGEN_URL = null; // Only set if user explicitly configures it
     let AUTO_FIX_PIPE_ISSUES = false; // Auto-fix pipe compatibility issues
     let CREATE_BACKUP = false; // Create backup files before remuxing
+    let TRANSLATE_TO_ENGLISH = true; // Translate to English (default on)
     
     // Logging utilities with timestamp
     function logInfo(message, ...args) {
@@ -364,6 +365,14 @@
             key: "debug_logging",
             value: {
                 b: DEBUG
+            }
+        });
+
+        // Pass translate to English setting
+        taskArgs.push({
+            key: "translate_to_english",
+            value: {
+                b: TRANSLATE_TO_ENGLISH
             }
         });
         
@@ -848,6 +857,12 @@
                     if (ourPluginSettings.createBackupFiles !== undefined) {
                         CREATE_BACKUP = Boolean(ourPluginSettings.createBackupFiles);
                         logInfo(`✓ Create backup files: ${CREATE_BACKUP ? 'ENABLED' : 'DISABLED'}`);
+                    }
+
+                    // Load translate to English setting
+                    if (ourPluginSettings.translateToEnglish !== undefined) {
+                        TRANSLATE_TO_ENGLISH = Boolean(ourPluginSettings.translateToEnglish);
+                        logInfo(`✓ Translate to English: ${TRANSLATE_TO_ENGLISH ? 'ENABLED (.eng.srt)' : 'DISABLED (.srt native language)'}`);
                     }
                 
                 return ourPluginSettings;

@@ -1,7 +1,7 @@
 name: Subgen
 description: Generates subtitles for scenes via Subgen webhook integration
-version: 3.3.0
-url: https://github.com/McCloudS/subgen
+version: 3.4.0
+url: https://github.com/feldorn/stash-subgen-integration
 interface: raw
 
 # Python backend script
@@ -38,4 +38,8 @@ settings:
   createBackupFiles:
     displayName: Create Backup Files
     description: "Create .bak backup of original files before remuxing (for testing/safety)"
+    type: BOOLEAN
+  translateToEnglish:
+    displayName: Translate to English
+    description: "When enabled, Whisper translates any audio language to English subtitles (.eng.srt). Safe for English audio — translation of English to English is a no-op. Disable only if you want native-language subtitles (.srt)."
     type: BOOLEAN

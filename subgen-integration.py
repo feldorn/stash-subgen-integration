@@ -323,7 +323,7 @@ def trigger_stash_scan(file_path):
         log_warning(f"Scan trigger error: {e}")
 
 
-def call_subgen_webhook(file_path, auto_fix_pipe_issues=False, create_backup=False):
+def call_subgen_webhook(file_path, auto_fix_pipe_issues=False, create_backup=False, translate_to_english=True):
     """Call Subgen /asr endpoint to generate subtitles for a single file"""
     basename = os.path.basename(file_path)
     log_info(f"Starting subtitle generation for: {basename}")
@@ -366,12 +366,17 @@ def call_subgen_webhook(file_path, auto_fix_pipe_issues=False, create_backup=Fal
                 'audio_file': (os.path.basename(file_path), f, 'video/mp4')
             }
             # Subgen API parameters - MUST be query parameters, not form data
+            # language is left blank so Whisper auto-detects the source language.
+            # task is 'translate' (outputs English regardless of source language) or
+            # 'transcribe' (outputs in the detected source language).
+            whisper_task = 'translate' if translate_to_english else 'transcribe'
             params = {
-                'language': 'en',      # Force English language
-                'task': 'transcribe',  # Transcribe (not translate)
+                'language': '',        # Auto-detect source language
+                'task': whisper_task,  # translate → English output; transcribe → native language
                 'output': 'srt',       # SRT subtitle format
                 'encode': True,        # Process the uploaded file
             }
+            log_info(f"Whisper task: {whisper_task} ({'English output' if translate_to_english else 'native language output'})")
             
             log_info("Uploading to Subgen and generating subtitles...")
             
@@ -392,8 +397,11 @@ def call_subgen_webhook(file_path, auto_fix_pipe_issues=False, create_backup=Fal
             log_error("Subgen returned empty or invalid response")
             raise Exception("Subgen failed to generate subtitles - empty response received")
         
-        # Save SRT file next to the ORIGINAL video file (not temp file)
-        srt_file_path = os.path.splitext(file_path)[0] + ".eng.srt"
+        # Save SRT file next to the ORIGINAL video file (not temp file).
+        # translate mode always outputs English → .eng.srt
+        # transcribe mode outputs native language → .srt (language unknown at this point)
+        srt_suffix = ".eng.srt" if translate_to_english else ".srt"
+        srt_file_path = os.path.splitext(file_path)[0] + srt_suffix
         
         try:
             with open(srt_file_path, 'w', encoding='utf-8') as f:
@@ -631,6 +639,11 @@ def main():
             if isinstance(create_backup, str):
                 create_backup = create_backup.lower() in ('true', '1', 'yes')
             
+            # Get translate_to_english setting from args
+            translate_to_english = args.get("translate_to_english", True)
+            if isinstance(translate_to_english, str):
+                translate_to_english = translate_to_english.lower() in ('true', '1', 'yes')
+
             if auto_fix_pipe_issues:
                 log_info("Auto-fix pipe compatibility enabled")
                 if create_backup:
@@ -643,7 +656,8 @@ def main():
             webhook_result = call_subgen_webhook(
                 scene_data["file_path"],
                 auto_fix_pipe_issues=auto_fix_pipe_issues,
-                create_backup=create_backup
+                create_backup=create_backup,
+                translate_to_english=translate_to_english
             )
             
             # Return success response
