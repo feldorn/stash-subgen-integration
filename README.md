@@ -8,7 +8,8 @@ A [Stash](https://github.com/stashapp/stash) plugin that integrates with [Subgen
 - **In-browser subtitle editor** — view and edit generated `.srt` files without leaving Stash (appears as "Edit Subtitles" in the menu when a subtitle already exists)
 - **Automatic Stash scan trigger** — after generation, Stash is automatically rescanned so the subtitle appears immediately
 - **MP4 pipe compatibility fix** — optionally remuxes files whose moov atom is not at the start, which would otherwise cause Subgen to fail
-- **Configurable settings** — Subgen URL, debug logging, auto-fix, and backup creation are all configurable from the Stash plugin settings UI
+- **Multilingual support** — auto-detects audio language; translates to English or transcribes in the native language depending on your settings
+- **Configurable settings** — Subgen URL, translate to English, debug logging, auto-fix, and backup creation are all configurable from the Stash plugin settings UI
 - **SPA-aware** — survives Stash's single-page app navigation without page reloads
 
 ## How It Works
@@ -94,6 +95,7 @@ Go to **Settings → Plugins → Subgen** to configure:
 | Setting | Default | Description |
 |---|---|---|
 | **Subgen Webhook URL** | `http://subgen:9000` | URL to your Subgen instance. Leave blank to use the default Docker network address. |
+| **Translate to English** | Off | When enabled, Whisper translates any audio language to English subtitles (`.eng.srt`). Safe for English audio — translating English to English is a no-op. Disable if you want native-language subtitles (`.srt`). |
 | **Debug Logging** | Off | Enables verbose logging to the browser console (F12). Useful for troubleshooting. |
 | **Auto-fix Pipe Compatibility Issues** | Off | Automatically remuxes MP4 files that fail the ffmpeg pipe compatibility check (moov atom not at start). Recommended if you encounter silent failures. |
 | **Create Backup Files** | Off | Creates a `.bak` copy of the original file before remuxing. Useful for safety during testing. |
@@ -110,14 +112,16 @@ Go to **Settings → Plugins → Subgen** to configure:
 
 ## Subtitle Files
 
-Generated subtitles are saved as `.eng.srt` files in the same directory as the source video:
+Generated subtitles are saved in the same directory as the source video. The filename depends on the **Translate to English** setting:
 
-```
-/your/media/path/video.mp4
-/your/media/path/video.eng.srt   ← generated here
-```
+| Setting | Output file | Notes |
+|---|---|---|
+| Translate to English = On | `video.eng.srt` | Any audio language → English subtitles |
+| Translate to English = Off | `video.srt` | Audio transcribed in its detected language |
 
 The plugin checks for existing subtitles in priority order: `.eng.srt`, `.en.srt`, `.srt`.
+
+Audio language is always auto-detected by Whisper — no configuration required. The source language does not need to be specified. Whisper's translate task is safe for English audio; translating English to English produces identical output to transcription.
 
 ## Troubleshooting
 
