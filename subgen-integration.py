@@ -366,12 +366,13 @@ def call_subgen_webhook(file_path, auto_fix_pipe_issues=False, create_backup=Fal
                 'audio_file': (os.path.basename(file_path), f, 'video/mp4')
             }
             # Subgen API parameters - MUST be query parameters, not form data
-            # language is left blank so Whisper auto-detects the source language.
+            # language is omitted entirely so Whisper auto-detects the source language.
+            # Passing an empty string is rejected by Subgen — omitting the param is
+            # the correct way to request auto-detection.
             # task is 'translate' (outputs English regardless of source language) or
             # 'transcribe' (outputs in the detected source language).
             whisper_task = 'translate' if translate_to_english else 'transcribe'
             params = {
-                'language': '',        # Auto-detect source language
                 'task': whisper_task,  # translate → English output; transcribe → native language
                 'output': 'srt',       # SRT subtitle format
                 'encode': True,        # Process the uploaded file
