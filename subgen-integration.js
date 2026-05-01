@@ -3,7 +3,8 @@
     
     // ════════════════════════════════════════════════════════════════
     // SUBGEN INTEGRATION PLUGIN FOR STASHAPP
-    // Version: 3.4.0 - Added Translate to English setting (auto-detect language)
+    // Version: 3.4.1 - Scope dropdown lookup to three-dot button so menu items
+    //                  no longer leak into the Edit tab's "Scrape With" dropdown
     // ════════════════════════════════════════════════════════════════
     
     // Plugin settings
@@ -66,25 +67,22 @@
     }
     
     /**
-     * Find the three-dot menu dropdown where we'll add our menu item
+     * Find the three-dot menu dropdown where we'll add our menu item.
+     * Anchored to the three-dot button so we don't accidentally match other
+     * Bootstrap dropdowns on the page (e.g. the Edit tab's "Scrape With" menu).
      */
     function findDropdownMenu() {
-        // Look for the dropdown menu (appears when clicking the three dots)
-        const dropdownMenuSelectors = [
-            '.dropdown-menu',
-            'div[class*="dropdown-menu"]',
-            '.scene-dropdown-menu'
-        ];
-        
-        for (const selector of dropdownMenuSelectors) {
-            const element = document.querySelector(selector);
-            if (element) {
-                logDebug(`Found dropdown menu using selector: ${selector}`);
-                return element;
-            }
+        const menuButton = findMenuButton();
+        if (!menuButton) {
+            return null;
         }
-        
-        return null;
+
+        const container = menuButton.closest('.dropdown');
+        const dropdown = container ? container.querySelector('.dropdown-menu') : null;
+        if (dropdown) {
+            logDebug('Found three-dot dropdown menu scoped to ellipsis button');
+        }
+        return dropdown;
     }
     
     /**
