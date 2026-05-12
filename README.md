@@ -96,12 +96,15 @@ Go to **Settings → Plugins → Subgen** to configure:
 |---|---|---|
 | **Subgen Webhook URL** | `http://subgen:9000` | URL to your Subgen instance. Leave blank to use the default Docker network address. |
 | **Translate to English** | Off | When enabled, Whisper translates any audio language to English subtitles (`.eng.srt`). Safe for English audio — translating English to English is a no-op. Disable if you want native-language subtitles (`.srt`). |
+| **Skip Existing Subtitles** | Off | When enabled, skips generating subtitles for scenes that already have a subtitle file. |
+| **Batch Generation Tag** | `subgen_me` | The tag name the plugin looks for when running the Batch Generate task. The plugin will remove this tag after successfully processing the scene. |
 | **Debug Logging** | Off | Enables verbose logging to the browser console (F12). Useful for troubleshooting. |
 | **Auto-fix Pipe Compatibility Issues** | Off | Automatically remuxes MP4 files that fail the ffmpeg pipe compatibility check (moov atom not at start). Recommended if you encounter silent failures. |
 | **Create Backup Files** | Off | Creates a `.bak` copy of the original file before remuxing. Useful for safety during testing. |
 
 ## Usage
 
+### Single Scene Generation
 1. Navigate to any scene detail page in Stash.
 2. Click the **three-dot menu** (⋮) in the scene header.
 3. Select **Generate Subtitles**.
@@ -109,6 +112,14 @@ Go to **Settings → Plugins → Subgen** to configure:
 5. Progress is visible in the Stash server logs.
 6. Once complete, the subtitle file (`.eng.srt`) is saved next to the video and Stash is automatically rescanned.
 7. If a subtitle already exists, an **Edit Subtitles** option will also appear in the menu, opening an in-browser editor with line numbers.
+
+### Batch Generation
+1. In your Stash library, tag all the scenes you want to process with your configured **Batch Generation Tag** (default: `subgen_me`).
+2. Go to **Settings → Tasks**.
+3. Scroll down to the **Plugin Tasks** section and click **Batch Generate Subtitles (By Tag)**.
+4. The plugin will sequentially process all scenes with that tag.
+5. Progress will be displayed directly in the Stash Tasks log.
+6. Once a scene is successfully processed (or skipped because a subtitle exists), the plugin automatically removes the tag from the scene.
 
 ## Subtitle Files
 
