@@ -20,6 +20,10 @@ tasks:
     description: Generate subtitles for a scene using Subgen
     defaultArgs:
       mode: generate_subtitles
+  - name: Batch Generate Subtitles (By Tag)
+    description: Generate subtitles for all scenes with a specific tag
+    defaultArgs:
+      mode: batch_generate_subtitles
 
 # Configuration settings
 settings:
@@ -43,3 +47,11 @@ settings:
     displayName: Translate to English
     description: "When enabled, Whisper translates any audio language to English subtitles (.eng.srt). Safe for English audio — translation of English to English is a no-op. Disable only if you want native-language subtitles (.srt)."
     type: BOOLEAN
+  skipExistingSubtitles:
+    displayName: Skip Existing Subtitles
+    description: "Do not generate subtitles if a subtitle file already exists for the scene"
+    type: BOOLEAN
+  batchTagName:
+    displayName: Batch Generation Tag
+    description: "Tag name used for the batch generation task (e.g. 'subgen_me'). The script will process these scenes and remove the tag when done."
+    type: STRING

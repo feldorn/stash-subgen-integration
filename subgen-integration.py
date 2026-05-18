@@ -53,134 +53,110 @@ def log_warning(message):
 def log_error(message):
     __log("e", message)
 
+def log_progress(progress: float):
+    __log("p", str(progress))
 
-def check_pipe_compatibility(file_path):
+def extract_audio_for_subgen(file_path):
     """
-    Test if a file works through ffmpeg pipe (non-seekable input).
-    Some valid MP4s fail when read via stdin/pipe due to moov atom positioning.
-    
-    Returns:
-        True if file works through pipe, False if it has pipe issues
-    """
-    try:
-        # Simulate pipe input: cat file | ffmpeg -i pipe: -f null -
-        # This is how Subgen reads uploaded files
-        cat_process = subprocess.Popen(
-            ['cat', file_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL
-        )
-        
-        ffmpeg_process = subprocess.Popen(
-            ['ffmpeg', '-v', 'error', '-i', 'pipe:', '-f', 'null', '-'],
-            stdin=cat_process.stdout,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE
-        )
-        
-        cat_process.stdout.close()
-        _, stderr = ffmpeg_process.communicate(timeout=30)
-        
-        # Wait for cat process to avoid zombie
-        cat_process.wait()
-        
-        # Check if ffmpeg succeeded
-        if ffmpeg_process.returncode == 0:
-            return True
-        else:
-            # File failed pipe test
-            error_msg = stderr.decode('utf-8', errors='ignore').strip()
-            if 'partial file' in error_msg.lower() or 'invalid data' in error_msg.lower():
-                log_warning("File failed pipe compatibility test (moov atom issue)")
-                log_debug(f"FFmpeg error: {error_msg[:200]}")
-            else:
-                log_warning(f"File failed pipe test: {error_msg[:200]}")
-            return False
-            
-    except subprocess.TimeoutExpired:
-        log_warning("Pipe compatibility test timed out")
-        return False
-    except Exception as e:
-        log_warning(f"Could not test pipe compatibility: {e}")
-        return True  # Assume compatible if we can't test
-
-
-def remux_for_pipe_compatibility(file_path, create_backup=False):
-    """
-    Remux an MP4 file to fix pipe compatibility issues.
-    Uses ffmpeg to move the moov atom to the beginning (+faststart).
+    Extract audio from a video file to a temporary MP3 file using FFmpeg.
+    This prevents memory exhaustion and pipe seeking issues when uploading to Subgen.
     
     Args:
-        file_path: Path to original file
-        create_backup: If True, create .bak backup of original
+        file_path: Path to original video file
         
     Returns:
-        Path to remuxed temp file, or None if remux failed
+        Path to temporary MP3 file, or None if extraction failed
     """
-    log_info(f"Remuxing file to fix pipe compatibility: {os.path.basename(file_path)}")
+    log_info(f"Extracting audio track locally: {os.path.basename(file_path)}")
     
     temp_path = None
     try:
-        # Create backup if requested
-        if create_backup:
-            backup_path = file_path + '.bak'
-            log_info(f"Creating backup: {os.path.basename(backup_path)}")
-            shutil.copy2(file_path, backup_path)
+        temp_fd, temp_path = tempfile.mkstemp(suffix='.wav', prefix='subgen_audio_')
+        os.close(temp_fd)
         
-        # Create temp file for remuxed output
-        temp_fd, temp_path = tempfile.mkstemp(suffix='.mp4', prefix='subgen_remux_')
-        os.close(temp_fd)  # Close fd, we'll let ffmpeg write to it
-        
-        log_debug(f"Remuxing to temp file: {temp_path}")
-        
-        # Remux with faststart flag to move moov atom to beginning
-        # -c copy = copy streams without re-encoding (fast)
-        # -movflags +faststart = move moov atom to beginning (fixes pipe issues)
+        # Extract audio using ffmpeg
+        # -vn: no video
+        # -c:a pcm_s16le -ar 16000 -ac 1: raw 16kHz WAV format (exactly what Whisper needs)
+        # This is extremely fast because it bypasses MP3 encoding overhead.
         result = subprocess.run(
             [
                 'ffmpeg',
                 '-v', 'error',
                 '-i', file_path,
-                '-c', 'copy',
-                '-movflags', '+faststart',
-                '-y',  # Overwrite output
+                '-vn',
+                '-c:a', 'pcm_s16le',
+                '-ar', '16000',
+                '-ac', '1',
+                '-y',
                 temp_path
             ],
             capture_output=True,
-            timeout=300  # 5 minute timeout
+            stdin=subprocess.DEVNULL,  # Prevent ffmpeg from hanging on input
+            timeout=1800  # 30 minute safety fallback timeout
         )
         
         if result.returncode == 0:
-            # Verify temp file exists and has content
             if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
-                log_info(f"✓ Remux successful, temp file: {os.path.basename(temp_path)}")
+                log_info(f"✓ Audio extraction successful, temp file: {os.path.basename(temp_path)}")
                 return temp_path
             else:
-                log_error("Remux produced empty file")
+                log_error("Audio extraction produced empty file")
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
                 return None
         else:
             error_msg = result.stderr.decode('utf-8', errors='ignore').strip()
-            log_error(f"Remux failed: {error_msg[:200]}")
+            log_error(f"Audio extraction failed: {error_msg[:200]}")
             if os.path.exists(temp_path):
                 os.remove(temp_path)
             return None
             
-    except subprocess.TimeoutExpired:
-        log_error("Remux timed out after 5 minutes")
+    except subprocess.TimeoutExpired as e:
+        stderr_output = ""
+        if e.stderr:
+            stderr_output = f"\nFFmpeg output: {e.stderr.decode('utf-8', errors='ignore').strip()[-500:]}"
+        log_error(f"Audio extraction timed out after 30 minutes. {stderr_output}")
         if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)
         return None
     except Exception as e:
-        log_error(f"Remux error: {e}")
-        # Clean up temp file on ANY exception (OSError, etc.)
+        log_error(f"Audio extraction error: {e}")
         if temp_path and os.path.exists(temp_path):
             try:
                 os.remove(temp_path)
             except:
                 pass
         return None
+
+
+def execute_graphql(query, variables=None):
+    """Helper function to execute GraphQL queries against Stash"""
+    headers = {"Content-Type": "application/json"}
+    if STASH_API_KEY:
+        headers["ApiKey"] = STASH_API_KEY
+    
+    cookies = {}
+    if STASH_SESSION_COOKIE:
+        cookies[STASH_SESSION_COOKIE["Name"]] = STASH_SESSION_COOKIE["Value"]
+        
+    if not STASH_GRAPHQL_URL:
+        raise Exception("Stash GraphQL URL not configured")
+        
+    response = requests.post(
+        STASH_GRAPHQL_URL,
+        json={"query": query, "variables": variables or {}},
+        headers=headers,
+        cookies=cookies,
+        verify=False,
+        timeout=30
+    )
+    response.raise_for_status()
+    
+    result = response.json()
+    if "errors" in result:
+        raise Exception(f"GraphQL errors: {result['errors']}")
+        
+    return result.get("data", {})
 
 
 def query_scene_file_path(scene_id):
@@ -250,6 +226,123 @@ def query_scene_file_path(scene_id):
         
     except requests.exceptions.RequestException as e:
         raise Exception(f"Failed to query Stash API: {e}")
+
+
+def query_plugin_settings():
+    """Query Stash for the subgen-integration plugin configuration"""
+    log_debug("Querying plugin configuration")
+    query = """
+        query Configuration {
+            configuration {
+                plugins
+            }
+        }
+    """
+    try:
+        data = execute_graphql(query)
+        plugins_config = data.get("configuration", {}).get("plugins", {})
+        if plugins_config and "subgen-integration" in plugins_config:
+            return plugins_config["subgen-integration"]
+    except Exception as e:
+        log_warning(f"Failed to query plugin settings: {e}")
+    return {}
+
+
+def query_tag_id(tag_name):
+    """Find a tag ID by its exact name"""
+    log_debug(f"Querying tag ID for '{tag_name}'")
+    query = """
+        query FindTags($filter: FindFilterType, $tag_filter: TagFilterType) {
+            findTags(filter: $filter, tag_filter: $tag_filter) {
+                tags {
+                    id
+                    name
+                }
+            }
+        }
+    """
+    variables = {
+        "filter": {"per_page": -1},
+        "tag_filter": {"name": {"value": tag_name, "modifier": "EQUALS"}}
+    }
+    
+    try:
+        data = execute_graphql(query, variables)
+        tags = data.get("findTags", {}).get("tags", [])
+        if tags:
+            return tags[0]["id"]
+    except Exception as e:
+        log_warning(f"Failed to query tag '{tag_name}': {e}")
+    return None
+
+
+def query_scenes_by_tag(tag_id):
+    """Find all scenes that have the specified tag"""
+    log_debug(f"Querying scenes with tag ID {tag_id}")
+    query = """
+        query FindScenes($filter: FindFilterType, $scene_filter: SceneFilterType) {
+            findScenes(filter: $filter, scene_filter: $scene_filter) {
+                scenes {
+                    id
+                    title
+                }
+            }
+        }
+    """
+    variables = {
+        "filter": {"per_page": -1},
+        "scene_filter": {"tags": {"value": [tag_id], "modifier": "INCLUDES"}}
+    }
+    
+    try:
+        data = execute_graphql(query, variables)
+        scenes = data.get("findScenes", {}).get("scenes", [])
+        return scenes
+    except Exception as e:
+        log_warning(f"Failed to query scenes by tag: {e}")
+    return []
+
+
+def remove_tag_from_scene(scene_id, tag_id):
+    """Remove a tag from a scene to prevent re-processing"""
+    log_debug(f"Removing tag {tag_id} from scene {scene_id}")
+    
+    # First, we need to get the current tags of the scene so we don't clear them all
+    query = """
+        query FindScene($id: ID!) {
+            findScene(id: $id) {
+                tags {
+                    id
+                }
+            }
+        }
+    """
+    try:
+        data = execute_graphql(query, {"id": scene_id})
+        scene = data.get("findScene", {})
+        current_tags = [t["id"] for t in scene.get("tags", [])]
+        
+        if tag_id in current_tags:
+            current_tags.remove(tag_id)
+            
+            # Update the scene
+            mutation = """
+                mutation SceneUpdate($input: SceneUpdateInput!) {
+                    sceneUpdate(input: $input) {
+                        id
+                    }
+                }
+            """
+            update_vars = {
+                "input": {
+                    "id": scene_id,
+                    "tag_ids": current_tags
+                }
+            }
+            execute_graphql(mutation, update_vars)
+            log_debug(f"Successfully removed tag from scene {scene_id}")
+    except Exception as e:
+        log_warning(f"Failed to remove tag from scene {scene_id}: {e}")
 
 
 def trigger_stash_scan(file_path):
@@ -323,7 +416,7 @@ def trigger_stash_scan(file_path):
         log_warning(f"Scan trigger error: {e}")
 
 
-def call_subgen_webhook(file_path, auto_fix_pipe_issues=False, create_backup=False, translate_to_english=True):
+def call_subgen_webhook(file_path, extract_audio=False, create_backup=False, translate_to_english=True):
     """Call Subgen /asr endpoint to generate subtitles for a single file"""
     basename = os.path.basename(file_path)
     log_info(f"Starting subtitle generation for: {basename}")
@@ -333,51 +426,43 @@ def call_subgen_webhook(file_path, auto_fix_pipe_issues=False, create_backup=Fal
     if not os.path.isfile(file_path):
         raise Exception(f"File not found in Stash container: {file_path}")
     
-    # Check pipe compatibility and auto-fix if enabled
-    remuxed_temp_file = None
+    # Extract audio locally if enabled
+    temp_audio_file = None
     actual_file_to_upload = file_path
     
-    if auto_fix_pipe_issues:
-        log_info("Checking pipe compatibility...")
-        is_compatible = check_pipe_compatibility(file_path)
+    if extract_audio:
+        log_info("Audio extraction enabled (via autoFixPipeIssues setting)...")
+        temp_audio_file = extract_audio_for_subgen(file_path)
         
-        if not is_compatible:
-            log_warning("File has pipe compatibility issues (moov atom positioning)")
-            log_info("Auto-fix enabled: remuxing file to fix compatibility...")
-            
-            remuxed_temp_file = remux_for_pipe_compatibility(file_path, create_backup)
-            
-            if remuxed_temp_file:
-                actual_file_to_upload = remuxed_temp_file
-                log_info(f"Using remuxed file for upload")
-            else:
-                log_error("Remux failed, will attempt upload with original file anyway")
-                actual_file_to_upload = file_path
+        if temp_audio_file:
+            actual_file_to_upload = temp_audio_file
+            log_info(f"Using locally extracted audio for upload")
         else:
-            log_info("✓ File is pipe-compatible, no remux needed")
+            log_error("Audio extraction failed, will attempt upload with original video file anyway")
+            actual_file_to_upload = file_path
+    else:
+        log_info("Audio extraction disabled. Uploading original video file.")
     
     # Use /asr endpoint - expects multipart file upload with 'audio_file' field
     webhook_url = f"{SUBGEN_WEBHOOK_URL}/asr"
     
     try:
-        # Open and upload the actual file (original or remuxed)
+        # Open and upload the actual file (original or extracted audio)
         with open(actual_file_to_upload, 'rb') as f:
             files = {
-                'audio_file': (os.path.basename(file_path), f, 'video/mp4')
+                'audio_file': (os.path.basename(actual_file_to_upload), f)
             }
             # Subgen API parameters - MUST be query parameters, not form data
             # language is omitted entirely so Whisper auto-detects the source language.
-            # Passing an empty string is rejected by Subgen — omitting the param is
-            # the correct way to request auto-detection.
-            # task is 'translate' (outputs English regardless of source language) or
-            # 'transcribe' (outputs in the detected source language).
             whisper_task = 'translate' if translate_to_english else 'transcribe'
             params = {
                 'task': whisper_task,  # translate → English output; transcribe → native language
                 'output': 'srt',       # SRT subtitle format
                 'encode': True,        # Process the uploaded file
+                'video_file': file_path  # Tell Subgen the original video path for timestamp correction
             }
             log_info(f"Whisper task: {whisper_task} ({'English output' if translate_to_english else 'native language output'})")
+            log_info(f"Including original video_file parameter for timestamp correction: {file_path}")
             
             log_info("Uploading to Subgen and generating subtitles...")
             
@@ -385,7 +470,7 @@ def call_subgen_webhook(file_path, auto_fix_pipe_issues=False, create_backup=Fal
                 webhook_url,
                 files=files,
                 params=params,  # Query parameters, not form data
-                timeout=3600  # 1 hour timeout for very long videos (Subgen can take 5-10+ minutes for long files)
+                timeout=7200  # 2 hour timeout for very long videos
             )
         
         response.raise_for_status()
@@ -428,13 +513,13 @@ def call_subgen_webhook(file_path, auto_fix_pipe_issues=False, create_backup=Fal
         raise Exception(f"Subgen webhook call failed: {e}")
     
     finally:
-        # Clean up temporary remuxed file if it was created
-        if remuxed_temp_file and os.path.exists(remuxed_temp_file):
+        # Clean up temporary audio file if it was created
+        if temp_audio_file and os.path.exists(temp_audio_file):
             try:
-                os.remove(remuxed_temp_file)
-                log_debug(f"Cleaned up temp file: {os.path.basename(remuxed_temp_file)}")
+                os.remove(temp_audio_file)
+                log_debug(f"Cleaned up temp audio file: {os.path.basename(temp_audio_file)}")
             except Exception as e:
-                log_warning(f"Could not delete temp file: {e}")
+                log_warning(f"Could not delete temp audio file: {e}")
 
 
 def get_subtitle_file_path(scene_id):
@@ -551,6 +636,10 @@ def save_subtitle_file(scene_id, content):
 
 def main():
     """Main entry point for Stash plugin task"""
+    
+    # Declare all globals used in this function at the very top
+    global STASH_GRAPHQL_URL, STASH_API_KEY, STASH_SESSION_COOKIE, DEBUG, SUBGEN_WEBHOOK_URL
+    
     try:
         # Read input from stdin (Stash passes JSON input)
         input_data = json.loads(sys.stdin.read())
@@ -564,12 +653,18 @@ def main():
         host = server_conn.get("Host", "localhost")
         port = server_conn.get("Port", 9999)
         
+        # FIX: Handle unspecified bind addresses and IPv6 formatting
+        # Windows cannot route to 0.0.0.0 or :: directly. We must use loopback.
+        if host in ("0.0.0.0", "::"):
+            host = "127.0.0.1"
+            
+        # Ensure IPv6 addresses are properly bracketed for URL construction
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        
         # Build Stash GraphQL URL from server connection
-        global STASH_GRAPHQL_URL, STASH_API_KEY
         STASH_GRAPHQL_URL = f"{scheme}://{host}:{port}/graphql"
         log_debug(f"Using Stash GraphQL URL: {STASH_GRAPHQL_URL}")
-        
-        global STASH_SESSION_COOKIE
         
         # Extract authentication from server connection
         if "ApiKey" in server_conn and server_conn["ApiKey"]:
@@ -585,11 +680,10 @@ def main():
         mode = args.get("mode", "generate")  # New: support different task modes
         log_debug(f"scene_id={scene_id}, mode={mode}")
         
-        if not scene_id:
-            raise ValueError("scene_id is required in args")
+        if mode != "batch_generate_subtitles" and not scene_id:
+            raise ValueError("scene_id is required in args for this mode")
         
         # Set global DEBUG flag from args
-        global DEBUG
         debug_logging = args.get("debug_logging", False)
         if isinstance(debug_logging, str):
             debug_logging = debug_logging.lower() in ('true', '1', 'yes')
@@ -619,12 +713,89 @@ def main():
                 "result": result
             }
             
+        elif mode == "batch_generate_subtitles":
+            log_info("Starting Batch Generation by Tag")
+            settings = query_plugin_settings()
+            
+            # Setup globals from settings
+            if settings.get("subgenWebhookUrl"):
+                SUBGEN_WEBHOOK_URL = settings.get("subgenWebhookUrl").strip()
+                log_info(f"Using custom Subgen URL: {SUBGEN_WEBHOOK_URL}")
+                
+            skip_existing = settings.get("skipExistingSubtitles", False)
+            auto_fix = settings.get("autoFixPipeIssues", False)
+            create_backup = settings.get("createBackupFiles", False)
+            translate_to_english = settings.get("translateToEnglish", True)
+            
+            # If the setting is empty string (not just None), fall back to default
+            tag_name = settings.get("batchTagName", "")
+            if not tag_name or not tag_name.strip():
+                tag_name = "subgen_me"
+            else:
+                tag_name = tag_name.strip()
+            
+            log_info(f"Looking for scenes with tag: '{tag_name}'")
+            tag_id = query_tag_id(tag_name)
+            
+            if not tag_id:
+                log_warning(f"Tag '{tag_name}' not found in Stash. Nothing to do.")
+                plugin_output = {"mode": "batch_generate", "status": "no_tag"}
+            else:
+                scenes = query_scenes_by_tag(tag_id)
+                total_scenes = len(scenes)
+                log_info(f"Found {total_scenes} scenes with tag '{tag_name}'")
+                
+                processed = 0
+                skipped = 0
+                errors = 0
+                
+                for idx, scene in enumerate(scenes):
+                    progress = idx / total_scenes
+                    log_progress(progress)
+                    
+                    s_id = scene["id"]
+                    s_title = scene.get("title", "Untitled")
+                    log_info(f"--- Processing {idx+1}/{total_scenes}: {s_title} (ID: {s_id}) ---")
+                    
+                    try:
+                        if skip_existing:
+                            subtitle_path = get_subtitle_file_path(s_id)
+                            if os.path.exists(subtitle_path):
+                                log_info(f"Subtitle already exists, skipping.")
+                                skipped += 1
+                                remove_tag_from_scene(s_id, tag_id)
+                                continue
+                        
+                        scene_data = query_scene_file_path(s_id)
+                        webhook_result = call_subgen_webhook(
+                            scene_data["file_path"],
+                            extract_audio=auto_fix,
+                            create_backup=create_backup,
+                            translate_to_english=translate_to_english
+                        )
+                        processed += 1
+                        
+                        # Remove tag on success
+                        remove_tag_from_scene(s_id, tag_id)
+                        
+                    except Exception as e:
+                        log_error(f"Error processing scene {s_id}: {e}")
+                        errors += 1
+                
+                log_progress(1.0)
+                log_info(f"Batch completed! Processed: {processed}, Skipped: {skipped}, Errors: {errors}")
+                plugin_output = {
+                    "mode": "batch_generate",
+                    "processed": processed,
+                    "skipped": skipped,
+                    "errors": errors
+                }
+            
         else:
             # Default mode: Generate subtitles
             # Debug logging status is now visible from debug messages themselves
             
             # Get Subgen URL from args (passed from JavaScript), or use default
-            global SUBGEN_WEBHOOK_URL
             if args.get("subgen_url"):
                 SUBGEN_WEBHOOK_URL = args.get("subgen_url")
                 log_info(f"Using custom Subgen URL: {SUBGEN_WEBHOOK_URL}")
