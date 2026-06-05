@@ -400,8 +400,9 @@ def call_subgen_webhook(file_path, auto_fix_pipe_issues=False, create_backup=Fal
         
         # Save SRT file next to the ORIGINAL video file (not temp file).
         # translate mode always outputs English → .eng.srt
-        # transcribe mode outputs native language → .srt (language unknown at this point)
-        srt_suffix = ".eng.srt" if translate_to_english else ".srt"
+        # transcribe mode → .en.srt so Stash tags the language (Subgen runs with
+        # FORCE_LANG=en; a bare .srt shows as "Unknown" in Stash)
+        srt_suffix = ".eng.srt" if translate_to_english else ".en.srt"
         srt_file_path = os.path.splitext(file_path)[0] + srt_suffix
         
         try:
