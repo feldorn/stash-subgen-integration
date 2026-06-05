@@ -385,7 +385,7 @@ def call_subgen_webhook(file_path, auto_fix_pipe_issues=False, create_backup=Fal
                 webhook_url,
                 files=files,
                 params=params,  # Query parameters, not form data
-                timeout=3600  # 1 hour timeout for very long videos (Subgen can take 5-10+ minutes for long files)
+                timeout=10800  # 3 hour timeout for very long videos (medium model on CPU can exceed 1h for 60+ min files)
             )
         
         response.raise_for_status()
