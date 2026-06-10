@@ -13,7 +13,8 @@
     let AUTO_FIX_PIPE_ISSUES = false; // Auto-fix pipe compatibility issues
     let CREATE_BACKUP = false; // Create backup files before remuxing
     let TRANSLATE_TO_ENGLISH = true; // Translate to English (default on)
-    
+    let SKIP_EXISTING_SUBTITLES = false; // Skip generation if a subtitle already exists
+
     // Logging utilities with timestamp
     function logInfo(message, ...args) {
         const timestamp = new Date().toISOString();
@@ -610,7 +611,18 @@
             logInfo('═══════════════════════════════════════════════════════');
             logInfo('CALLING PYTHON BACKEND TASK');
             logInfo('═══════════════════════════════════════════════════════');
-            
+
+            // Optionally skip if a subtitle already exists for this scene
+            if (SKIP_EXISTING_SUBTITLES) {
+                logInfo('Checking if subtitle already exists...');
+                const subtitleExists = await checkSubtitleExists(sceneId);
+                if (subtitleExists) {
+                    logInfo('Subtitle already exists, skipping generation.');
+                    alert(`Subtitle already exists for "${sceneData.title || 'this scene'}". Skipping generation.`);
+                    return;
+                }
+            }
+
             // Call Python backend task (runs server-side in Stash container)
             const taskResponse = await callPythonTask(sceneId);
             
@@ -862,7 +874,13 @@
                         TRANSLATE_TO_ENGLISH = Boolean(ourPluginSettings.translateToEnglish);
                         logInfo(`✓ Translate to English: ${TRANSLATE_TO_ENGLISH ? 'ENABLED (.eng.srt)' : 'DISABLED (.srt native language)'}`);
                     }
-                
+
+                    // Load skip existing subtitles setting
+                    if (ourPluginSettings.skipExistingSubtitles !== undefined) {
+                        SKIP_EXISTING_SUBTITLES = Boolean(ourPluginSettings.skipExistingSubtitles);
+                        logInfo(`✓ Skip existing subtitles: ${SKIP_EXISTING_SUBTITLES ? 'ENABLED' : 'DISABLED'}`);
+                    }
+
                 return ourPluginSettings;
             } else {
                 logInfo('No plugins config found in GraphQL response');

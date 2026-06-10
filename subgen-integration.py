@@ -53,6 +53,10 @@ def log_warning(message):
 def log_error(message):
     __log("e", message)
 
+def log_progress(progress: float):
+    """Report task progress (0.0–1.0) to Stash's task log via the 'p' level"""
+    __log("p", str(progress))
+
 
 def check_pipe_compatibility(file_path):
     """
@@ -250,6 +254,148 @@ def query_scene_file_path(scene_id):
         
     except requests.exceptions.RequestException as e:
         raise Exception(f"Failed to query Stash API: {e}")
+
+
+def execute_graphql(query, variables=None):
+    """Execute a GraphQL query/mutation against Stash and return the data block.
+
+    Shared helper for the batch-generation queries below. (The older functions
+    build their own requests directly; this is the consolidated path for new code.)
+    """
+    headers = {"Content-Type": "application/json"}
+    if STASH_API_KEY:
+        headers["ApiKey"] = STASH_API_KEY
+
+    cookies = {}
+    if STASH_SESSION_COOKIE:
+        cookies[STASH_SESSION_COOKIE["Name"]] = STASH_SESSION_COOKIE["Value"]
+
+    if not STASH_GRAPHQL_URL:
+        raise Exception("Stash GraphQL URL not configured")
+
+    response = requests.post(
+        STASH_GRAPHQL_URL,
+        json={"query": query, "variables": variables or {}},
+        headers=headers,
+        cookies=cookies,
+        verify=False,  # Skip SSL verification for internal Docker calls
+        timeout=30
+    )
+    response.raise_for_status()
+
+    result = response.json()
+    if "errors" in result:
+        raise Exception(f"GraphQL errors: {result['errors']}")
+
+    return result.get("data", {})
+
+
+def query_plugin_settings():
+    """Query Stash for the subgen-integration plugin configuration.
+
+    Used by the batch task, which runs from Stash Tasks (no JS to forward
+    settings as args), so it must read the saved settings server-side.
+    """
+    log_debug("Querying plugin configuration")
+    query = """
+        query Configuration {
+            configuration {
+                plugins
+            }
+        }
+    """
+    try:
+        data = execute_graphql(query)
+        plugins_config = data.get("configuration", {}).get("plugins", {})
+        if plugins_config and "subgen-integration" in plugins_config:
+            return plugins_config["subgen-integration"]
+    except Exception as e:
+        log_warning(f"Failed to query plugin settings: {e}")
+    return {}
+
+
+def query_tag_id(tag_name):
+    """Find a tag ID by its exact name"""
+    log_debug(f"Querying tag ID for '{tag_name}'")
+    query = """
+        query FindTags($filter: FindFilterType, $tag_filter: TagFilterType) {
+            findTags(filter: $filter, tag_filter: $tag_filter) {
+                tags {
+                    id
+                    name
+                }
+            }
+        }
+    """
+    variables = {
+        "filter": {"per_page": -1},
+        "tag_filter": {"name": {"value": tag_name, "modifier": "EQUALS"}}
+    }
+    try:
+        data = execute_graphql(query, variables)
+        tags = data.get("findTags", {}).get("tags", [])
+        if tags:
+            return tags[0]["id"]
+    except Exception as e:
+        log_warning(f"Failed to query tag '{tag_name}': {e}")
+    return None
+
+
+def query_scenes_by_tag(tag_id):
+    """Find all scenes that have the specified tag"""
+    log_debug(f"Querying scenes with tag ID {tag_id}")
+    query = """
+        query FindScenes($filter: FindFilterType, $scene_filter: SceneFilterType) {
+            findScenes(filter: $filter, scene_filter: $scene_filter) {
+                scenes {
+                    id
+                    title
+                }
+            }
+        }
+    """
+    variables = {
+        "filter": {"per_page": -1},
+        "scene_filter": {"tags": {"value": [tag_id], "modifier": "INCLUDES"}}
+    }
+    try:
+        data = execute_graphql(query, variables)
+        return data.get("findScenes", {}).get("scenes", [])
+    except Exception as e:
+        log_warning(f"Failed to query scenes by tag: {e}")
+    return []
+
+
+def remove_tag_from_scene(scene_id, tag_id):
+    """Remove a single tag from a scene (preserving its other tags) to prevent re-processing"""
+    log_debug(f"Removing tag {tag_id} from scene {scene_id}")
+    query = """
+        query FindScene($id: ID!) {
+            findScene(id: $id) {
+                tags {
+                    id
+                }
+            }
+        }
+    """
+    try:
+        data = execute_graphql(query, {"id": scene_id})
+        scene = data.get("findScene", {})
+        current_tags = [t["id"] for t in scene.get("tags", [])]
+
+        if tag_id in current_tags:
+            current_tags.remove(tag_id)
+            mutation = """
+                mutation SceneUpdate($input: SceneUpdateInput!) {
+                    sceneUpdate(input: $input) {
+                        id
+                    }
+                }
+            """
+            execute_graphql(mutation, {"input": {"id": scene_id, "tag_ids": current_tags}})
+            log_debug(f"Successfully removed tag from scene {scene_id}")
+    except Exception as e:
+        log_warning(f"Failed to remove tag from scene {scene_id}: {e}")
 
 
 def trigger_stash_scan(file_path):
@@ -552,6 +698,10 @@ def save_subtitle_file(scene_id, content):
 
 def main():
     """Main entry point for Stash plugin task"""
+
+    # Declare all module globals reassigned in this function up front
+    global STASH_GRAPHQL_URL, STASH_API_KEY, STASH_SESSION_COOKIE, DEBUG, SUBGEN_WEBHOOK_URL
+
     try:
         # Read input from stdin (Stash passes JSON input)
         input_data = json.loads(sys.stdin.read())
@@ -564,14 +714,19 @@ def main():
         scheme = server_conn.get("Scheme", "http")
         host = server_conn.get("Host", "localhost")
         port = server_conn.get("Port", 9999)
-        
+
+        # Handle unspecified bind addresses: a host bound to 0.0.0.0 or :: cannot
+        # be routed to directly (notably on Windows), so fall back to loopback.
+        if host in ("0.0.0.0", "::"):
+            host = "127.0.0.1"
+        # Bracket bare IPv6 addresses for URL construction
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+
         # Build Stash GraphQL URL from server connection
-        global STASH_GRAPHQL_URL, STASH_API_KEY
         STASH_GRAPHQL_URL = f"{scheme}://{host}:{port}/graphql"
         log_debug(f"Using Stash GraphQL URL: {STASH_GRAPHQL_URL}")
-        
-        global STASH_SESSION_COOKIE
-        
+
         # Extract authentication from server connection
         if "ApiKey" in server_conn and server_conn["ApiKey"]:
             STASH_API_KEY = server_conn["ApiKey"]
@@ -586,11 +741,11 @@ def main():
         mode = args.get("mode", "generate")  # New: support different task modes
         log_debug(f"scene_id={scene_id}, mode={mode}")
         
-        if not scene_id:
-            raise ValueError("scene_id is required in args")
-        
+        # The batch task operates over many scenes, so it has no single scene_id
+        if mode != "batch_generate_subtitles" and not scene_id:
+            raise ValueError("scene_id is required in args for this mode")
+
         # Set global DEBUG flag from args
-        global DEBUG
         debug_logging = args.get("debug_logging", False)
         if isinstance(debug_logging, str):
             debug_logging = debug_logging.lower() in ('true', '1', 'yes')
@@ -620,12 +775,86 @@ def main():
                 "result": result
             }
             
+        elif mode == "batch_generate_subtitles":
+            # Batch mode: process every scene carrying the configured trigger tag.
+            # Runs from Stash Tasks (no JS), so settings are read server-side.
+            log_info("Starting Batch Generation by Tag")
+            settings = query_plugin_settings()
+
+            if settings.get("subgenWebhookUrl"):
+                SUBGEN_WEBHOOK_URL = settings.get("subgenWebhookUrl").strip()
+                log_info(f"Using custom Subgen URL: {SUBGEN_WEBHOOK_URL}")
+
+            skip_existing = settings.get("skipExistingSubtitles", False)
+            auto_fix_pipe_issues = settings.get("autoFixPipeIssues", False)
+            create_backup = settings.get("createBackupFiles", False)
+            translate_to_english = settings.get("translateToEnglish", True)
+
+            # Trigger tag name, defaulting to 'subgen_me' when unset/blank
+            tag_name = settings.get("batchTagName", "")
+            tag_name = tag_name.strip() if tag_name and tag_name.strip() else "subgen_me"
+
+            log_info(f"Looking for scenes with tag: '{tag_name}'")
+            tag_id = query_tag_id(tag_name)
+
+            if not tag_id:
+                log_warning(f"Tag '{tag_name}' not found in Stash. Nothing to do.")
+                plugin_output = {"mode": "batch_generate", "status": "no_tag"}
+            else:
+                scenes = query_scenes_by_tag(tag_id)
+                total_scenes = len(scenes)
+                log_info(f"Found {total_scenes} scenes with tag '{tag_name}'")
+
+                processed = 0
+                skipped = 0
+                errors = 0
+
+                for idx, scene in enumerate(scenes):
+                    log_progress(idx / total_scenes)
+
+                    s_id = scene["id"]
+                    s_title = scene.get("title", "Untitled")
+                    log_info(f"--- Processing {idx+1}/{total_scenes}: {s_title} (ID: {s_id}) ---")
+
+                    try:
+                        if skip_existing:
+                            subtitle_path = get_subtitle_file_path(s_id)
+                            if os.path.exists(subtitle_path):
+                                log_info("Subtitle already exists, skipping.")
+                                skipped += 1
+                                remove_tag_from_scene(s_id, tag_id)
+                                continue
+
+                        scene_data = query_scene_file_path(s_id)
+                        call_subgen_webhook(
+                            scene_data["file_path"],
+                            auto_fix_pipe_issues=auto_fix_pipe_issues,
+                            create_backup=create_backup,
+                            translate_to_english=translate_to_english
+                        )
+                        processed += 1
+
+                        # Remove the trigger tag only on success so failures retry next run
+                        remove_tag_from_scene(s_id, tag_id)
+
+                    except Exception as e:
+                        log_error(f"Error processing scene {s_id}: {e}")
+                        errors += 1
+
+                log_progress(1.0)
+                log_info(f"Batch completed! Processed: {processed}, Skipped: {skipped}, Errors: {errors}")
+                plugin_output = {
+                    "mode": "batch_generate",
+                    "processed": processed,
+                    "skipped": skipped,
+                    "errors": errors
+                }
+
         else:
             # Default mode: Generate subtitles
             # Debug logging status is now visible from debug messages themselves
-            
+
             # Get Subgen URL from args (passed from JavaScript), or use default
-            global SUBGEN_WEBHOOK_URL
             if args.get("subgen_url"):
                 SUBGEN_WEBHOOK_URL = args.get("subgen_url")
                 log_info(f"Using custom Subgen URL: {SUBGEN_WEBHOOK_URL}")

@@ -95,12 +95,16 @@ Go to **Settings → Plugins → Subgen** to configure:
 | Setting | Default | Description |
 |---|---|---|
 | **Subgen Webhook URL** | `http://subgen:9000` | URL to your Subgen instance. Leave blank to use the default Docker network address. |
-| **Translate to English** | Off | When enabled, Whisper translates any audio language to English subtitles (`.eng.srt`). Safe for English audio — translating English to English is a no-op. Disable if you want native-language subtitles (`.srt`). |
+| **Translate to English** | Off | When enabled, Whisper translates any audio language to English subtitles (`.eng.srt`). Safe for English audio — translating English to English is a no-op. Disable if you want native-language subtitles (`.en.srt`). |
+| **Skip Existing Subtitles** | Off | Skip generation for scenes that already have a subtitle file. Applies to both single-scene generation and the batch task. |
+| **Batch Generation Tag** | `subgen_me` | The tag the **Batch Generate Subtitles (By Tag)** task looks for. Scenes with this tag are processed and the tag is removed on success. |
 | **Debug Logging** | Off | Enables verbose logging to the browser console (F12). Useful for troubleshooting. |
 | **Auto-fix Pipe Compatibility Issues** | Off | Automatically remuxes MP4 files that fail the ffmpeg pipe compatibility check (moov atom not at start). Recommended if you encounter silent failures. |
 | **Create Backup Files** | Off | Creates a `.bak` copy of the original file before remuxing. Useful for safety during testing. |
 
 ## Usage
+
+### Single scene
 
 1. Navigate to any scene detail page in Stash.
 2. Click the **three-dot menu** (⋮) in the scene header.
@@ -110,6 +114,13 @@ Go to **Settings → Plugins → Subgen** to configure:
 6. Once complete, the subtitle file (`.eng.srt`) is saved next to the video and Stash is automatically rescanned.
 7. If a subtitle already exists, an **Edit Subtitles** option will also appear in the menu, opening an in-browser editor with line numbers.
 
+### Batch generation by tag
+
+1. Tag every scene you want processed with your **Batch Generation Tag** (default: `subgen_me`).
+2. Go to **Settings → Tasks**, find the **Plugin Tasks** section, and click **Batch Generate Subtitles (By Tag)**.
+3. The plugin processes the tagged scenes sequentially, with progress shown in the Stash Tasks log.
+4. On success (or when skipped because a subtitle already exists), the trigger tag is automatically removed from the scene so it isn't reprocessed. Scenes that error keep the tag and will be retried on the next run.
+
 ## Subtitle Files
 
 Generated subtitles are saved in the same directory as the source video. The filename depends on the **Translate to English** setting:
@@ -117,7 +128,7 @@ Generated subtitles are saved in the same directory as the source video. The fil
 | Setting | Output file | Notes |
 |---|---|---|
 | Translate to English = On | `video.eng.srt` | Any audio language → English subtitles |
-| Translate to English = Off | `video.srt` | Audio transcribed in its detected language |
+| Translate to English = Off | `video.en.srt` | Audio transcribed in its detected language (named `.en.srt` so Stash tags the language rather than showing "Unknown") |
 
 The plugin checks for existing subtitles in priority order: `.eng.srt`, `.en.srt`, `.srt`.
 
