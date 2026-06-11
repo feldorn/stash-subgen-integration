@@ -58,6 +58,18 @@ def log_progress(progress: float):
     __log("p", str(progress))
 
 
+def _coerce_bool(value):
+    """Coerce a setting value to bool.
+
+    Stash <0.23.0 passes booleans as strings, so we must treat the string
+    "false"/"0"/"no" as False rather than relying on Python truthiness (a
+    non-empty string is always truthy).
+    """
+    if isinstance(value, str):
+        return value.strip().lower() in ('true', '1', 'yes')
+    return bool(value)
+
+
 def check_pipe_compatibility(file_path):
     """
     Test if a file works through ffmpeg pipe (non-seekable input).
@@ -225,6 +237,7 @@ def query_scene_file_path(scene_id):
             json={"query": query, "variables": variables},
             headers=headers,
             cookies=cookies,
+            verify=False,  # Skip SSL verification for internal Docker calls
             timeout=10
         )
         response.raise_for_status()
@@ -531,6 +544,7 @@ def call_subgen_webhook(file_path, auto_fix_pipe_issues=False, create_backup=Fal
                 webhook_url,
                 files=files,
                 params=params,  # Query parameters, not form data
+                verify=False,  # Skip SSL verification for internal Docker calls
                 timeout=10800  # 3 hour timeout for very long videos (medium model on CPU can exceed 1h for 60+ min files)
             )
         
@@ -746,10 +760,7 @@ def main():
             raise ValueError("scene_id is required in args for this mode")
 
         # Set global DEBUG flag from args
-        debug_logging = args.get("debug_logging", False)
-        if isinstance(debug_logging, str):
-            debug_logging = debug_logging.lower() in ('true', '1', 'yes')
-        DEBUG = debug_logging
+        DEBUG = _coerce_bool(args.get("debug_logging", False))
         
         # Handle different task modes
         if mode == "read_subtitle":
@@ -785,10 +796,13 @@ def main():
                 SUBGEN_WEBHOOK_URL = settings.get("subgenWebhookUrl").strip()
                 log_info(f"Using custom Subgen URL: {SUBGEN_WEBHOOK_URL}")
 
-            skip_existing = settings.get("skipExistingSubtitles", False)
-            auto_fix_pipe_issues = settings.get("autoFixPipeIssues", False)
-            create_backup = settings.get("createBackupFiles", False)
-            translate_to_english = settings.get("translateToEnglish", True)
+            # Coerce string booleans — Stash <0.23.0 may return settings as
+            # strings, so "false" must not be treated as truthy (matches the
+            # single-scene generate path below).
+            skip_existing = _coerce_bool(settings.get("skipExistingSubtitles", False))
+            auto_fix_pipe_issues = _coerce_bool(settings.get("autoFixPipeIssues", False))
+            create_backup = _coerce_bool(settings.get("createBackupFiles", False))
+            translate_to_english = _coerce_bool(settings.get("translateToEnglish", True))
 
             # Trigger tag name, defaulting to 'subgen_me' when unset/blank
             tag_name = settings.get("batchTagName", "")
@@ -860,20 +874,10 @@ def main():
                 log_info(f"Using custom Subgen URL: {SUBGEN_WEBHOOK_URL}")
             
             # Get settings from args (passed from JavaScript)
-            # Note: Stash <0.23.0 passes booleans as strings, so we need to handle both
-            auto_fix_pipe_issues = args.get("auto_fix_pipe_issues", False)
-            create_backup = args.get("create_backup", False)
-            
-            # Convert string booleans to actual booleans (backward compatibility)
-            if isinstance(auto_fix_pipe_issues, str):
-                auto_fix_pipe_issues = auto_fix_pipe_issues.lower() in ('true', '1', 'yes')
-            if isinstance(create_backup, str):
-                create_backup = create_backup.lower() in ('true', '1', 'yes')
-            
-            # Get translate_to_english setting from args
-            translate_to_english = args.get("translate_to_english", True)
-            if isinstance(translate_to_english, str):
-                translate_to_english = translate_to_english.lower() in ('true', '1', 'yes')
+            # Note: Stash <0.23.0 passes booleans as strings, so coerce both
+            auto_fix_pipe_issues = _coerce_bool(args.get("auto_fix_pipe_issues", False))
+            create_backup = _coerce_bool(args.get("create_backup", False))
+            translate_to_english = _coerce_bool(args.get("translate_to_english", True))
 
             if auto_fix_pipe_issues:
                 log_info("Auto-fix pipe compatibility enabled")

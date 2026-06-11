@@ -3,8 +3,8 @@
     
     // ════════════════════════════════════════════════════════════════
     // SUBGEN INTEGRATION PLUGIN FOR STASHAPP
-    // Version: 3.4.1 - Scope dropdown lookup to three-dot button so menu items
-    //                  no longer leak into the Edit tab's "Scrape With" dropdown
+    // Version: 3.5.1 - Bugfixes: batch boolean coercion, editor HTML-injection,
+    //                  stale Edit-Subtitles menu item, dead-code/verify cleanup
     // ════════════════════════════════════════════════════════════════
     
     // Plugin settings
@@ -417,111 +417,6 @@
     // ════════════════════════════════════════════════════════════════
     // BUTTON CREATION AND EVENT HANDLERS
     // ════════════════════════════════════════════════════════════════
-    
-    /**
-     * Handle button click - Step 1: Just log the data
-     */
-    async function handleGenerateSubtitlesClick(event) {
-        logInfo('═══════════════════════════════════════════════════════');
-        logInfo('Generate Subtitles button clicked!');
-        logInfo('═══════════════════════════════════════════════════════');
-        
-        const button = event.target;
-        const originalText = button.innerHTML;
-        
-        try {
-            // Reload settings to get latest values
-            await loadSettings();
-            
-            // Disable button during processing
-            button.disabled = true;
-            button.innerHTML = '<i class="fas fa-spinner fa-spin fa-lg" style="color: white;"></i>';
-            
-            // Get scene ID
-            const sceneId = getSceneIdFromUrl();
-            logInfo(`Scene ID: ${sceneId}`);
-            
-            if (!sceneId) {
-                throw new Error('Could not extract scene ID from URL');
-            }
-            
-            // Query scene data
-            logInfo('Fetching scene data from Stashapp API...');
-            const sceneData = await querySceneData(sceneId);
-            
-            // Log all retrieved data
-            logInfo('═══════════════════════════════════════════════════════');
-            logInfo('SCENE DATA RETRIEVED:');
-            logInfo('═══════════════════════════════════════════════════════');
-            logInfo('Scene ID:', sceneData.id);
-            logInfo('Title:', sceneData.title);
-            logInfo('Date:', sceneData.date);
-            logInfo('Rating:', sceneData.rating100);
-            logInfo('Organized:', sceneData.organized);
-            logInfo('View Count (o_counter):', sceneData.o_counter);
-            
-            if (sceneData.studio) {
-                logInfo('Studio:', sceneData.studio.name, `(ID: ${sceneData.studio.id})`);
-            }
-            
-            if (sceneData.performers && sceneData.performers.length > 0) {
-                logInfo('Performers:');
-                sceneData.performers.forEach((performer, index) => {
-                    logInfo(`  Performer ${index + 1}:`, performer.name, `(ID: ${performer.id})`);
-                });
-            }
-            
-            if (sceneData.files && sceneData.files.length > 0) {
-                logInfo('Files:');
-                sceneData.files.forEach((file, index) => {
-                    logInfo(`  File ${index + 1}:`, {
-                        path: file.path,
-                        basename: file.basename,
-                        size: `${(file.size / 1024 / 1024 / 1024).toFixed(2)} GB`,
-                        duration: file.duration ? `${(file.duration / 60).toFixed(2)} min` : 'N/A',
-                        resolution: file.width && file.height ? `${file.width}x${file.height}` : 'N/A',
-                        codec: file.video_codec || 'N/A'
-                    });
-                });
-            } else {
-                logInfo('No files found for this scene');
-            }
-            
-            logInfo('═══════════════════════════════════════════════════════');
-            logInfo('STEP 1 VALIDATION COMPLETE');
-            logInfo('Next steps: Implement webhook call to Subgen');
-            logInfo('═══════════════════════════════════════════════════════');
-            
-            // Success feedback - show alert with key info
-            const filePath = sceneData.files && sceneData.files.length > 0 
-                ? sceneData.files[0].path 
-                : sceneData.path || 'No path found';
-            
-            alert(`✓ Step 1 Validation Complete!\n\nScene: ${sceneData.title || 'Untitled'}\nFile: ${filePath}\n\nOpen browser console (F12) to see all logged data.`);
-            
-            button.innerHTML = '<i class="fas fa-check fa-lg" style="color: #28a745;"></i>';
-            
-            setTimeout(() => {
-                button.innerHTML = originalText;
-                button.disabled = false;
-            }, 3000);
-            
-        } catch (error) {
-            logError('Error in handleGenerateSubtitlesClick:', error);
-            
-            // Show error in alert dialog for visibility
-            const errorMsg = error.message || String(error);
-            alert(`Subgen Plugin Error:\n\n${errorMsg}\n\nCheck browser console (F12) for detailed logs.`);
-            
-            // Error feedback
-            button.innerHTML = '<i class="fas fa-exclamation-triangle fa-lg" style="color: #dc3545;"></i>';
-            
-            setTimeout(() => {
-                button.innerHTML = originalText;
-                button.disabled = false;
-            }, 5000);
-        }
-    }
     
     /**
      * Click handler for menu context - no visual state changes to the menu item
@@ -1033,7 +928,7 @@
                     </div>
                     <div class="modal-body">
                         <div class="mb-2">
-                            <small class="text-muted">${filePath}</small>
+                            <small class="text-muted" id="subgen-editor-filepath"></small>
                         </div>
                         <div style="display: flex; border: 1px solid #444;">
                             <div id="subgen-line-numbers" style="
@@ -1064,7 +959,7 @@
                                     min-height: 500px;
                                 "
                                 spellcheck="false"
-                            >${content}</textarea>
+                            ></textarea>
                         </div>
                         <div class="mt-2">
                             <small class="text-muted">
@@ -1088,6 +983,11 @@
         // Update line numbers
         const textarea = document.getElementById('subgen-editor-textarea');
         const lineNumbers = document.getElementById('subgen-line-numbers');
+
+        // Set content/path as text (not interpolated into innerHTML) so subtitle
+        // text containing </textarea>, <, & etc. cannot break out of the editor
+        textarea.value = content;
+        document.getElementById('subgen-editor-filepath').textContent = filePath;
         
         function updateLineNumbers() {
             const lines = textarea.value.split('\n').length;
@@ -1294,12 +1194,16 @@
                 logDebug(`Path changed from ${lastPath} to ${currentPath}`);
                 lastPath = currentPath;
                 
-                // Remove old menu item if it exists
-                const oldMenuItem = document.getElementById('subgen-menu-item');
-                if (oldMenuItem) {
-                    oldMenuItem.remove();
-                    logDebug('Removed old menu item for page navigation');
-                }
+                // Remove old menu items if they exist (both Generate and Edit,
+                // so a stale Edit item from the previous scene can't persist or
+                // block re-adding on the new page)
+                ['subgen-menu-item', 'subgen-edit-menu-item'].forEach(id => {
+                    const oldMenuItem = document.getElementById(id);
+                    if (oldMenuItem) {
+                        oldMenuItem.remove();
+                        logDebug(`Removed old menu item (${id}) for page navigation`);
+                    }
+                });
                 
                 // Try to inject button on new page with delay
                 setTimeout(() => tryInjectButton(), 500);
