@@ -123,6 +123,16 @@ Go to **Settings → Plugins → Subgen** to configure:
 3. The plugin processes the tagged scenes sequentially, with progress shown in the Stash Tasks log.
 4. On success (or when skipped because a subtitle already exists), the trigger tag is automatically removed from the scene so it isn't reprocessed. Scenes that error keep the tag and will be retried on the next run.
 
+## Companion: host-side automation ([stash-tools](https://github.com/feldorn/stash-tools))
+
+The built-in batch task runs **inside Stash's job queue**, which is serial — a long batch ties up that queue for the duration. For unattended, large-scale, or scheduled use, the companion project **[stash-tools](https://github.com/feldorn/stash-tools)** moves the work out of Stash entirely:
+
+- **Scheduled metadata scans** from cron/systemd (Stash has no built-in scheduler), which **skip when a scan is already running/queued** so they never pile up.
+- **One-at-a-time Subgen subtitle generation** driven by the same `subgen_me` tag, run from the host — so it **never blocks Stash's job queue**.
+- **Crash-safe recovery**: the tag *is* the work queue (a scene's tag is cleared only after its subtitle is confirmed written), so an interrupted run resumes cleanly with no state file.
+
+The in-plugin **Generate Subtitles** / **Edit Subtitles** menu items remain the quick interactive path; stash-tools is the batch/automation counterpart. See its README for setup.
+
 ## Subtitle Files
 
 Generated subtitles are saved in the same directory as the source video. The filename depends on the **Translate to English** setting:
