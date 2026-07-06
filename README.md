@@ -1,6 +1,6 @@
 # Subgen Integration Plugin for Stash
 
-**Version:** 3.5.1
+**Version:** 3.6.0
 
 A [Stash](https://github.com/stashapp/stash) plugin that integrates with [Subgen](https://github.com/McCloudS/subgen) to automatically generate subtitles for your media library scenes.
 
@@ -97,6 +97,7 @@ Go to **Settings → Plugins → Subgen** to configure:
 | Setting | Default | Description |
 |---|---|---|
 | **Subgen Webhook URL** | `http://subgen:9000` | URL to your Subgen instance. Leave blank to use the default Docker network address. |
+| **FFmpeg Binary Path** | `ffmpeg` | Path to the `ffmpeg` binary used for the pipe-compatibility check and remux. Leave blank to use `ffmpeg` from `PATH`. Set to a newer binary (e.g. `/opt/bin/ffmpeg`) if your system's ffmpeg is too old for `-movflags +faststart` — common on native/QNAP Stash installs. |
 | **Translate to English** | Off | When enabled, Whisper translates any audio language to English subtitles (`.eng.srt`). Safe for English audio — translating English to English is a no-op. Disable if you want native-language subtitles (`.en.srt`). |
 | **Skip Existing Subtitles** | Off | Skip generation for scenes that already have a subtitle file. Applies to both single-scene generation and the batch task. |
 | **Batch Generation Tag** | `subgen_me` | The tag the **Batch Generate Subtitles (By Tag)** task looks for. Scenes with this tag are processed and the tag is removed on success. |
@@ -151,6 +152,8 @@ Audio language is always auto-detected by Whisper — no configuration required.
 **"File not found in Stash container"** — The video path queried from Stash does not exist inside the container. Verify your volume mounts match between your compose file and Stash's library paths.
 
 **Subgen returns empty response** — The video file may have pipe compatibility issues. Enable **Auto-fix Pipe Compatibility Issues** in plugin settings.
+
+**"Remux failed: ffmpeg version too old"** — Your system's `ffmpeg` is too old for `-movflags +faststart` (seen on native/QNAP Stash installs with ancient ffmpeg). Install a newer ffmpeg and set its path in **FFmpeg Binary Path** in plugin settings.
 
 **Subtitle generated but not appearing in Stash** — The automatic rescan may have been skipped. Manually trigger a library scan in Stash (**Tasks → Scan**).
 

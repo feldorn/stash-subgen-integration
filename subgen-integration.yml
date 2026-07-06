@@ -1,6 +1,6 @@
 name: Subgen
 description: Generates subtitles for scenes via Subgen webhook integration
-version: 3.5.1
+version: 3.6.0
 url: https://github.com/feldorn/stash-subgen-integration
 interface: raw
 
@@ -30,6 +30,10 @@ settings:
   subgenWebhookUrl:
     displayName: Subgen Webhook URL
     description: "The URL to your Subgen webhook endpoint (default: http://subgen:9000)"
+    type: STRING
+  ffmpegPath:
+    displayName: FFmpeg Binary Path
+    description: "Path to the ffmpeg binary used for the pipe-compatibility check and remux (default: ffmpeg on PATH). Set this to a newer ffmpeg if your system's is too old for '-movflags +faststart' (e.g. native/QNAP Stash installs)."
     type: STRING
   debugLogging:
     displayName: Debug Logging

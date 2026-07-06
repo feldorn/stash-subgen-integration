@@ -19,6 +19,11 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # Subgen webhook URL (Docker container name)
 SUBGEN_WEBHOOK_URL = os.getenv("SUBGEN_WEBHOOK_URL", "http://subgen:9000")
 
+# ffmpeg binary used for the pipe-compatibility check and remux. Defaults to
+# "ffmpeg" on PATH; override via the ffmpegPath plugin setting when the system
+# ffmpeg is too old (e.g. native/QNAP Stash installs) or lives at a custom path.
+FFMPEG_PATH = os.getenv("FFMPEG_PATH", "ffmpeg")
+
 # Global variables for Stash connection (set from input)
 STASH_GRAPHQL_URL = None
 STASH_API_KEY = None
@@ -88,7 +93,7 @@ def check_pipe_compatibility(file_path):
         )
         
         ffmpeg_process = subprocess.Popen(
-            ['ffmpeg', '-v', 'error', '-i', 'pipe:', '-f', 'null', '-'],
+            [FFMPEG_PATH, '-v', 'error', '-i', 'pipe:', '-f', 'null', '-'],
             stdin=cat_process.stdout,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE
@@ -154,7 +159,7 @@ def remux_for_pipe_compatibility(file_path, create_backup=False):
         # -movflags +faststart = move moov atom to beginning (fixes pipe issues)
         result = subprocess.run(
             [
-                'ffmpeg',
+                FFMPEG_PATH,
                 '-v', 'error',
                 '-i', file_path,
                 '-c', 'copy',
@@ -714,7 +719,7 @@ def main():
     """Main entry point for Stash plugin task"""
 
     # Declare all module globals reassigned in this function up front
-    global STASH_GRAPHQL_URL, STASH_API_KEY, STASH_SESSION_COOKIE, DEBUG, SUBGEN_WEBHOOK_URL
+    global STASH_GRAPHQL_URL, STASH_API_KEY, STASH_SESSION_COOKIE, DEBUG, SUBGEN_WEBHOOK_URL, FFMPEG_PATH
 
     try:
         # Read input from stdin (Stash passes JSON input)
@@ -796,6 +801,10 @@ def main():
                 SUBGEN_WEBHOOK_URL = settings.get("subgenWebhookUrl").strip()
                 log_info(f"Using custom Subgen URL: {SUBGEN_WEBHOOK_URL}")
 
+            if settings.get("ffmpegPath") and settings.get("ffmpegPath").strip():
+                FFMPEG_PATH = settings.get("ffmpegPath").strip()
+                log_info(f"Using custom ffmpeg binary: {FFMPEG_PATH}")
+
             # Coerce string booleans — Stash <0.23.0 may return settings as
             # strings, so "false" must not be treated as truthy (matches the
             # single-scene generate path below).
@@ -872,7 +881,12 @@ def main():
             if args.get("subgen_url"):
                 SUBGEN_WEBHOOK_URL = args.get("subgen_url")
                 log_info(f"Using custom Subgen URL: {SUBGEN_WEBHOOK_URL}")
-            
+
+            # Custom ffmpeg binary path from args (passed from JavaScript)
+            if args.get("ffmpeg_path"):
+                FFMPEG_PATH = args.get("ffmpeg_path")
+                log_info(f"Using custom ffmpeg binary: {FFMPEG_PATH}")
+
             # Get settings from args (passed from JavaScript)
             # Note: Stash <0.23.0 passes booleans as strings, so coerce both
             auto_fix_pipe_issues = _coerce_bool(args.get("auto_fix_pipe_issues", False))

@@ -3,13 +3,14 @@
     
     // ════════════════════════════════════════════════════════════════
     // SUBGEN INTEGRATION PLUGIN FOR STASHAPP
-    // Version: 3.5.1 - Bugfixes: batch boolean coercion, editor HTML-injection,
-    //                  stale Edit-Subtitles menu item, dead-code/verify cleanup
+    // Version: 3.6.0 - Configurable ffmpeg binary path (ffmpegPath setting) for
+    //                  systems whose default ffmpeg is too old for remux
     // ════════════════════════════════════════════════════════════════
     
     // Plugin settings
     let DEBUG = false; // Will be loaded from settings
     let CUSTOM_SUBGEN_URL = null; // Only set if user explicitly configures it
+    let CUSTOM_FFMPEG_PATH = null; // Only set if user explicitly configures a custom ffmpeg binary
     let AUTO_FIX_PIPE_ISSUES = false; // Auto-fix pipe compatibility issues
     let CREATE_BACKUP = false; // Create backup files before remuxing
     let TRANSLATE_TO_ENGLISH = true; // Translate to English (default on)
@@ -342,7 +343,19 @@
         } else {
             logDebug('Using Python backend default Subgen URL (http://subgen:9000)');
         }
-        
+
+        // Only pass ffmpeg_path if user has explicitly configured a custom binary
+        // Otherwise, let Python use its default ("ffmpeg" on PATH)
+        if (CUSTOM_FFMPEG_PATH) {
+            taskArgs.push({
+                key: "ffmpeg_path",
+                value: {
+                    str: CUSTOM_FFMPEG_PATH
+                }
+            });
+            logDebug(`Passing custom ffmpeg path to Python backend: ${CUSTOM_FFMPEG_PATH}`);
+        }
+
         // Pass auto-fix pipe issues setting
         taskArgs.push({
             key: "auto_fix_pipe_issues",
@@ -751,7 +764,13 @@
                     } else {
                         logInfo('Using Python backend default Subgen URL (http://subgen:9000)');
                     }
-                    
+
+                    // Only set custom ffmpeg path if user has explicitly configured it
+                    if (ourPluginSettings.ffmpegPath && ourPluginSettings.ffmpegPath.trim()) {
+                        CUSTOM_FFMPEG_PATH = ourPluginSettings.ffmpegPath.trim();
+                        logInfo(`✓ Loaded custom ffmpeg path from settings: ${CUSTOM_FFMPEG_PATH}`);
+                    }
+
                     // Load auto-fix pipe issues setting
                     if (ourPluginSettings.autoFixPipeIssues !== undefined) {
                         AUTO_FIX_PIPE_ISSUES = Boolean(ourPluginSettings.autoFixPipeIssues);
