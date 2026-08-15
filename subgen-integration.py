@@ -576,7 +576,8 @@ def trigger_stash_scan(file_path):
 
 
 def call_subgen_webhook(file_path, extract_audio=False, auto_fix_pipe_issues=False,
-                        create_backup=False, translate_to_english=True):
+                        create_backup=False, translate_to_english=True,
+                        source_language=None):
     """Call Subgen /asr endpoint to generate subtitles for a single file"""
     basename = os.path.basename(file_path)
     log_info(f"Starting subtitle generation for: {basename}")
@@ -639,17 +640,27 @@ def call_subgen_webhook(file_path, extract_audio=False, auto_fix_pipe_issues=Fal
                 'audio_file': (upload_name, f, content_type)
             }
             # Subgen API parameters - MUST be query parameters, not form data
-            # language is omitted entirely so Whisper auto-detects the source language.
-            # Passing an empty string is rejected by Subgen — omitting the param is
-            # the correct way to request auto-detection.
             # task is 'translate' (outputs English regardless of source language) or
-            # 'transcribe' (outputs in the detected source language).
+            # 'transcribe' (outputs in the source language).
             whisper_task = 'translate' if translate_to_english else 'transcribe'
             params = {
                 'task': whisper_task,  # translate → English output; transcribe → native language
                 'output': 'srt',       # SRT subtitle format
                 'encode': True,        # Process the uploaded file
             }
+
+            # 'language' pins the SOURCE language. When omitted, Whisper auto-detects
+            # from the opening audio — which misfires on accented speech (a British
+            # English clip has been observed detected as Welsh and transcribed into
+            # phonetic Welsh). Pin it when the library language is known.
+            # An empty string is rejected by Subgen, so the param is omitted entirely
+            # rather than sent blank when auto-detect is wanted.
+            if source_language and source_language.strip():
+                params['language'] = source_language.strip()
+                log_info(f"Source language pinned to: {params['language']}")
+            else:
+                log_info("Source language: auto-detect (Whisper may misdetect accented speech)")
+
             log_info(f"Whisper task: {whisper_task} ({'English output' if translate_to_english else 'native language output'})")
 
             log_info("Uploading to Subgen and generating subtitles...")
@@ -922,6 +933,7 @@ def main():
             auto_fix_pipe_issues = _coerce_bool(settings.get("autoFixPipeIssues", False))
             create_backup = _coerce_bool(settings.get("createBackupFiles", False))
             translate_to_english = _coerce_bool(settings.get("translateToEnglish", True))
+            source_language = settings.get("sourceLanguage", "")
 
             if extract_audio:
                 log_info("Local audio extraction enabled (supersedes remux/pipe auto-fix)")
@@ -969,7 +981,8 @@ def main():
                             extract_audio=extract_audio,
                             auto_fix_pipe_issues=auto_fix_pipe_issues,
                             create_backup=create_backup,
-                            translate_to_english=translate_to_english
+                            translate_to_english=translate_to_english,
+                            source_language=source_language
                         )
                         processed += 1
 
@@ -1009,6 +1022,7 @@ def main():
             auto_fix_pipe_issues = _coerce_bool(args.get("auto_fix_pipe_issues", False))
             create_backup = _coerce_bool(args.get("create_backup", False))
             translate_to_english = _coerce_bool(args.get("translate_to_english", True))
+            source_language = args.get("source_language", "")
 
             if extract_audio:
                 log_info("Local audio extraction enabled (supersedes remux/pipe auto-fix)")
@@ -1026,7 +1040,8 @@ def main():
                 extract_audio=extract_audio,
                 auto_fix_pipe_issues=auto_fix_pipe_issues,
                 create_backup=create_backup,
-                translate_to_english=translate_to_english
+                translate_to_english=translate_to_english,
+                source_language=source_language
             )
             
             # Return success response

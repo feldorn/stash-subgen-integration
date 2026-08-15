@@ -1,6 +1,6 @@
 name: Subgen
 description: Generates subtitles for scenes via Subgen webhook integration
-version: 3.7.0
+version: 3.8.0
 url: https://github.com/feldorn/stash-subgen-integration
 interface: raw
 
@@ -34,6 +34,10 @@ settings:
   ffmpegPath:
     displayName: FFmpeg Binary Path
     description: "Path to the ffmpeg binary used for local audio extraction, the pipe-compatibility check and remux (default: ffmpeg on PATH). Set this to a newer ffmpeg if your system's is too old for '-movflags +faststart' (e.g. native/QNAP Stash installs)."
+    type: STRING
+  sourceLanguage:
+    displayName: Source Language
+    description: "ISO-639-1 code of the spoken language in your media, e.g. 'en'. Leave blank to let Whisper auto-detect. Auto-detect is unreliable on accented or quiet-intro audio — British English has been observed detected as Welsh, producing subtitles that look like gibberish. Set this to 'en' if your library is English."
     type: STRING
   debugLogging:
     displayName: Debug Logging

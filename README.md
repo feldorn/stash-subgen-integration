@@ -1,6 +1,6 @@
 # Subgen Integration Plugin for Stash
 
-**Version:** 3.7.0
+**Version:** 3.8.0
 
 A [Stash](https://github.com/stashapp/stash) plugin that integrates with [Subgen](https://github.com/McCloudS/subgen) to automatically generate subtitles for your media library scenes.
 
@@ -11,8 +11,8 @@ A [Stash](https://github.com/stashapp/stash) plugin that integrates with [Subgen
 - **Automatic Stash scan trigger** — after generation, Stash is automatically rescanned so the subtitle appears immediately
 - **Local audio extraction** — optionally uploads a 16 kHz mono WAV of the audio track instead of the whole video: far smaller uploads, less work for the Subgen container, and no quality loss
 - **MP4 pipe compatibility fix** — optionally remuxes files whose moov atom is not at the start, which would otherwise cause Subgen to fail
-- **Multilingual support** — auto-detects audio language; translates to English or transcribes in the native language depending on your settings
-- **Configurable settings** — Subgen URL, ffmpeg path, translate to English, debug logging, audio extraction, auto-fix, and backup creation are all configurable from the Stash plugin settings UI
+- **Multilingual support** — pin the source language or let Whisper auto-detect it; translates to English or transcribes in the native language depending on your settings
+- **Configurable settings** — Subgen URL, ffmpeg path, source language, translate to English, debug logging, audio extraction, auto-fix, and backup creation are all configurable from the Stash plugin settings UI
 - **SPA-aware** — survives Stash's single-page app navigation without page reloads
 
 ## How It Works
@@ -99,6 +99,7 @@ Go to **Settings → Plugins → Subgen** to configure:
 |---|---|---|
 | **Subgen Webhook URL** | `http://subgen:9000` | URL to your Subgen instance. Leave blank to use the default Docker network address. |
 | **FFmpeg Binary Path** | `ffmpeg` | Path to the `ffmpeg` binary used for local audio extraction, the pipe-compatibility check and remux. Leave blank to use `ffmpeg` from `PATH`. Set to a newer binary (e.g. `/opt/bin/ffmpeg`) if your system's ffmpeg is too old for `-movflags +faststart` — common on native/QNAP Stash installs. |
+| **Source Language** | *(blank — auto-detect)* | ISO-639-1 code of the language spoken in your media, e.g. `en`. **Set this to `en` if your library is English.** Left blank, Whisper auto-detects from the opening seconds of audio, which is unreliable on accented or quiet-intro material — a British English scene has been observed detected as Welsh and transcribed into phonetic Welsh, producing subtitles that read as gibberish. Only leave it blank if you genuinely have mixed-language content. |
 | **Translate to English** | Off | When enabled, Whisper translates any audio language to English subtitles (`.eng.srt`). Safe for English audio — translating English to English is a no-op. Disable if you want native-language subtitles (`.en.srt`). |
 | **Skip Existing Subtitles** | Off | Skip generation for scenes that already have a subtitle file. Applies to both single-scene generation and the batch task. |
 | **Batch Generation Tag** | `subgen_me` | The tag the **Batch Generate Subtitles (By Tag)** task looks for. Scenes with this tag are processed and the tag is removed on success. |
@@ -158,6 +159,8 @@ Audio language is always auto-detected by Whisper — no configuration required.
 **"Remux failed: ffmpeg version too old"** — Your system's `ffmpeg` is too old for `-movflags +faststart` (seen on native/QNAP Stash installs with ancient ffmpeg). Install a newer ffmpeg and set its path in **FFmpeg Binary Path** in plugin settings. Alternatively, switch to **Extract Audio Locally**, which does not use `+faststart` at all.
 
 **Uploads are slow or Subgen runs out of memory** — Enable **Extract Audio Locally**. A 16 kHz mono WAV of a 90-minute film is ~165 MB versus several GB for the video, and Subgen no longer has to demux it. The trade-off is that extraction is a full decode, so it costs some local CPU time up front.
+
+**Subtitles are gibberish, or in the wrong language** — Whisper misdetected the source language. It picks the language from the opening seconds of audio, and accented speech, a quiet intro, or background music can throw it off; the result is real words in the wrong language rather than nonsense, so it is easy to mistake for an encoding problem. Set **Source Language** to your library's language (`en` for English) and regenerate. Note that Subgen's `FORCE_LANG` / `FORCE_DETECTED_LANGUAGE_TO` environment variables do **not** help here — they do not apply to the `/asr` endpoint this plugin uses, so the language must be pinned in the plugin settings.
 
 **Subtitle generated but not appearing in Stash** — The automatic rescan may have been skipped. Manually trigger a library scan in Stash (**Tasks → Scan**).
 

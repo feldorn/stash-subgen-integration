@@ -3,14 +3,15 @@
     
     // ════════════════════════════════════════════════════════════════
     // SUBGEN INTEGRATION PLUGIN FOR STASHAPP
-    // Version: 3.7.0 - Local audio extraction (extractAudioLocally setting):
-    //                  upload a 16 kHz mono WAV instead of the whole video
+    // Version: 3.8.0 - Source language pinning (sourceLanguage setting) to stop
+    //                  Whisper misdetecting accented English; local audio extraction
     // ════════════════════════════════════════════════════════════════
 
     // Plugin settings
     let DEBUG = false; // Will be loaded from settings
     let CUSTOM_SUBGEN_URL = null; // Only set if user explicitly configures it
     let CUSTOM_FFMPEG_PATH = null; // Only set if user explicitly configures a custom ffmpeg binary
+    let SOURCE_LANGUAGE = null; // Only set if user pins a source language (blank = auto-detect)
     let EXTRACT_AUDIO_LOCALLY = false; // Extract audio locally and upload that instead of the video
     let AUTO_FIX_PIPE_ISSUES = false; // Auto-fix pipe compatibility issues
     let CREATE_BACKUP = false; // Create backup files before remuxing
@@ -355,6 +356,18 @@
                 }
             });
             logDebug(`Passing custom ffmpeg path to Python backend: ${CUSTOM_FFMPEG_PATH}`);
+        }
+
+        // Only pass source_language if the user pinned one; otherwise Python omits
+        // the param entirely so Subgen auto-detects (a blank value is rejected)
+        if (SOURCE_LANGUAGE) {
+            taskArgs.push({
+                key: "source_language",
+                value: {
+                    str: SOURCE_LANGUAGE
+                }
+            });
+            logDebug(`Passing source language to Python backend: ${SOURCE_LANGUAGE}`);
         }
 
         // Pass local audio extraction setting
@@ -778,6 +791,14 @@
                     if (ourPluginSettings.ffmpegPath && ourPluginSettings.ffmpegPath.trim()) {
                         CUSTOM_FFMPEG_PATH = ourPluginSettings.ffmpegPath.trim();
                         logInfo(`✓ Loaded custom ffmpeg path from settings: ${CUSTOM_FFMPEG_PATH}`);
+                    }
+
+                    // Only set source language if user has explicitly pinned one
+                    if (ourPluginSettings.sourceLanguage && ourPluginSettings.sourceLanguage.trim()) {
+                        SOURCE_LANGUAGE = ourPluginSettings.sourceLanguage.trim();
+                        logInfo(`✓ Source language pinned to: ${SOURCE_LANGUAGE}`);
+                    } else {
+                        logInfo('Source language: auto-detect (set Source Language if output comes out in the wrong language)');
                     }
 
                     // Load local audio extraction setting
