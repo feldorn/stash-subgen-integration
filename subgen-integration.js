@@ -3,14 +3,15 @@
     
     // ════════════════════════════════════════════════════════════════
     // SUBGEN INTEGRATION PLUGIN FOR STASHAPP
-    // Version: 3.6.0 - Configurable ffmpeg binary path (ffmpegPath setting) for
-    //                  systems whose default ffmpeg is too old for remux
+    // Version: 3.7.0 - Local audio extraction (extractAudioLocally setting):
+    //                  upload a 16 kHz mono WAV instead of the whole video
     // ════════════════════════════════════════════════════════════════
-    
+
     // Plugin settings
     let DEBUG = false; // Will be loaded from settings
     let CUSTOM_SUBGEN_URL = null; // Only set if user explicitly configures it
     let CUSTOM_FFMPEG_PATH = null; // Only set if user explicitly configures a custom ffmpeg binary
+    let EXTRACT_AUDIO_LOCALLY = false; // Extract audio locally and upload that instead of the video
     let AUTO_FIX_PIPE_ISSUES = false; // Auto-fix pipe compatibility issues
     let CREATE_BACKUP = false; // Create backup files before remuxing
     let TRANSLATE_TO_ENGLISH = true; // Translate to English (default on)
@@ -355,6 +356,14 @@
             });
             logDebug(`Passing custom ffmpeg path to Python backend: ${CUSTOM_FFMPEG_PATH}`);
         }
+
+        // Pass local audio extraction setting
+        taskArgs.push({
+            key: "extract_audio_locally",
+            value: {
+                b: EXTRACT_AUDIO_LOCALLY
+            }
+        });
 
         // Pass auto-fix pipe issues setting
         taskArgs.push({
@@ -769,6 +778,12 @@
                     if (ourPluginSettings.ffmpegPath && ourPluginSettings.ffmpegPath.trim()) {
                         CUSTOM_FFMPEG_PATH = ourPluginSettings.ffmpegPath.trim();
                         logInfo(`✓ Loaded custom ffmpeg path from settings: ${CUSTOM_FFMPEG_PATH}`);
+                    }
+
+                    // Load local audio extraction setting
+                    if (ourPluginSettings.extractAudioLocally !== undefined) {
+                        EXTRACT_AUDIO_LOCALLY = Boolean(ourPluginSettings.extractAudioLocally);
+                        logInfo(`✓ Local audio extraction: ${EXTRACT_AUDIO_LOCALLY ? 'ENABLED' : 'DISABLED'}`);
                     }
 
                     // Load auto-fix pipe issues setting

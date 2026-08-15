@@ -1,6 +1,6 @@
 # Subgen Integration Plugin for Stash
 
-**Version:** 3.6.0
+**Version:** 3.7.0
 
 A [Stash](https://github.com/stashapp/stash) plugin that integrates with [Subgen](https://github.com/McCloudS/subgen) to automatically generate subtitles for your media library scenes.
 
@@ -9,9 +9,10 @@ A [Stash](https://github.com/stashapp/stash) plugin that integrates with [Subgen
 - **One-click subtitle generation** — adds a "Generate Subtitles" option to the scene three-dot menu
 - **In-browser subtitle editor** — view and edit generated `.srt` files without leaving Stash (appears as "Edit Subtitles" in the menu when a subtitle already exists)
 - **Automatic Stash scan trigger** — after generation, Stash is automatically rescanned so the subtitle appears immediately
+- **Local audio extraction** — optionally uploads a 16 kHz mono WAV of the audio track instead of the whole video: far smaller uploads, less work for the Subgen container, and no quality loss
 - **MP4 pipe compatibility fix** — optionally remuxes files whose moov atom is not at the start, which would otherwise cause Subgen to fail
 - **Multilingual support** — auto-detects audio language; translates to English or transcribes in the native language depending on your settings
-- **Configurable settings** — Subgen URL, translate to English, debug logging, auto-fix, and backup creation are all configurable from the Stash plugin settings UI
+- **Configurable settings** — Subgen URL, ffmpeg path, translate to English, debug logging, audio extraction, auto-fix, and backup creation are all configurable from the Stash plugin settings UI
 - **SPA-aware** — survives Stash's single-page app navigation without page reloads
 
 ## How It Works
@@ -31,7 +32,7 @@ The plugin has two components:
 | [Stash](https://github.com/stashapp/stash) | Media server and plugin host | v0.23.0+ recommended; older versions may pass booleans as strings (handled) |
 | [Subgen](https://github.com/McCloudS/subgen) | AI subtitle generation service | Must be running and network-reachable from the Stash container |
 | Python 3 | Runs the backend script | Must be available inside the Stash container |
-| `ffmpeg` | Pipe compatibility check and remux | Must be available inside the Stash container (standard in most Stash Docker images) |
+| `ffmpeg` | Local audio extraction, pipe compatibility check and remux | Must be available inside the Stash container (standard in most Stash Docker images) |
 
 ### Python Packages (backend)
 
@@ -97,13 +98,14 @@ Go to **Settings → Plugins → Subgen** to configure:
 | Setting | Default | Description |
 |---|---|---|
 | **Subgen Webhook URL** | `http://subgen:9000` | URL to your Subgen instance. Leave blank to use the default Docker network address. |
-| **FFmpeg Binary Path** | `ffmpeg` | Path to the `ffmpeg` binary used for the pipe-compatibility check and remux. Leave blank to use `ffmpeg` from `PATH`. Set to a newer binary (e.g. `/opt/bin/ffmpeg`) if your system's ffmpeg is too old for `-movflags +faststart` — common on native/QNAP Stash installs. |
+| **FFmpeg Binary Path** | `ffmpeg` | Path to the `ffmpeg` binary used for local audio extraction, the pipe-compatibility check and remux. Leave blank to use `ffmpeg` from `PATH`. Set to a newer binary (e.g. `/opt/bin/ffmpeg`) if your system's ffmpeg is too old for `-movflags +faststart` — common on native/QNAP Stash installs. |
 | **Translate to English** | Off | When enabled, Whisper translates any audio language to English subtitles (`.eng.srt`). Safe for English audio — translating English to English is a no-op. Disable if you want native-language subtitles (`.en.srt`). |
 | **Skip Existing Subtitles** | Off | Skip generation for scenes that already have a subtitle file. Applies to both single-scene generation and the batch task. |
 | **Batch Generation Tag** | `subgen_me` | The tag the **Batch Generate Subtitles (By Tag)** task looks for. Scenes with this tag are processed and the tag is removed on success. |
 | **Debug Logging** | Off | Enables verbose logging to the browser console (F12). Useful for troubleshooting. |
-| **Auto-fix Pipe Compatibility Issues** | Off | Automatically remuxes MP4 files that fail the ffmpeg pipe compatibility check (moov atom not at start). Recommended if you encounter silent failures. |
-| **Create Backup Files** | Off | Creates a `.bak` copy of the original file before remuxing. Useful for safety during testing. |
+| **Extract Audio Locally** | Off | Extracts the audio track to a temporary 16 kHz mono WAV with ffmpeg and uploads that instead of the video file. The WAV is uncompressed PCM at a fixed ~110 MB/hour regardless of source bitrate, so a 90-minute film uploads as ~165 MB instead of several GB — and the Subgen container no longer has to demux the video. No quality loss: Whisper resamples to exactly this format anyway. Because the container is rebuilt from a full decode, this also makes moov-atom/pipe problems impossible, so it **supersedes Auto-fix Pipe Compatibility Issues** when both are on. Note the fixed rate cuts both ways — for unusually low-bitrate or short clips the WAV can be *larger* than the source. |
+| **Auto-fix Pipe Compatibility Issues** | Off | Automatically remuxes MP4 files that fail the ffmpeg pipe compatibility check (moov atom not at start). Recommended if you encounter silent failures. Ignored when **Extract Audio Locally** is enabled. |
+| **Create Backup Files** | Off | Creates a `.bak` copy of the original file before remuxing. Useful for safety during testing. Only applies to the remux path — local audio extraction never touches the original file. |
 
 ## Usage
 
@@ -151,9 +153,11 @@ Audio language is always auto-detected by Whisper — no configuration required.
 
 **"File not found in Stash container"** — The video path queried from Stash does not exist inside the container. Verify your volume mounts match between your compose file and Stash's library paths.
 
-**Subgen returns empty response** — The video file may have pipe compatibility issues. Enable **Auto-fix Pipe Compatibility Issues** in plugin settings.
+**Subgen returns empty response** — The video file may have pipe compatibility issues. Enable **Extract Audio Locally** (preferred) or **Auto-fix Pipe Compatibility Issues** in plugin settings.
 
-**"Remux failed: ffmpeg version too old"** — Your system's `ffmpeg` is too old for `-movflags +faststart` (seen on native/QNAP Stash installs with ancient ffmpeg). Install a newer ffmpeg and set its path in **FFmpeg Binary Path** in plugin settings.
+**"Remux failed: ffmpeg version too old"** — Your system's `ffmpeg` is too old for `-movflags +faststart` (seen on native/QNAP Stash installs with ancient ffmpeg). Install a newer ffmpeg and set its path in **FFmpeg Binary Path** in plugin settings. Alternatively, switch to **Extract Audio Locally**, which does not use `+faststart` at all.
+
+**Uploads are slow or Subgen runs out of memory** — Enable **Extract Audio Locally**. A 16 kHz mono WAV of a 90-minute film is ~165 MB versus several GB for the video, and Subgen no longer has to demux it. The trade-off is that extraction is a full decode, so it costs some local CPU time up front.
 
 **Subtitle generated but not appearing in Stash** — The automatic rescan may have been skipped. Manually trigger a library scan in Stash (**Tasks → Scan**).
 

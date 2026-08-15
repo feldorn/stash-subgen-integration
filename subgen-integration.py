@@ -11,6 +11,7 @@ import os
 import subprocess
 import tempfile
 import shutil
+import mimetypes
 import urllib3
 
 # Disable SSL warnings for internal Docker network calls
@@ -19,9 +20,10 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # Subgen webhook URL (Docker container name)
 SUBGEN_WEBHOOK_URL = os.getenv("SUBGEN_WEBHOOK_URL", "http://subgen:9000")
 
-# ffmpeg binary used for the pipe-compatibility check and remux. Defaults to
-# "ffmpeg" on PATH; override via the ffmpegPath plugin setting when the system
-# ffmpeg is too old (e.g. native/QNAP Stash installs) or lives at a custom path.
+# ffmpeg binary used for local audio extraction, the pipe-compatibility check
+# and remux. Defaults to "ffmpeg" on PATH; override via the ffmpegPath plugin
+# setting when the system ffmpeg is too old (e.g. native/QNAP Stash installs)
+# or lives at a custom path.
 FFMPEG_PATH = os.getenv("FFMPEG_PATH", "ffmpeg")
 
 # Global variables for Stash connection (set from input)
@@ -73,6 +75,91 @@ def _coerce_bool(value):
     if isinstance(value, str):
         return value.strip().lower() in ('true', '1', 'yes')
     return bool(value)
+
+
+def extract_audio_for_subgen(file_path):
+    """
+    Extract the audio track to a temporary 16 kHz mono WAV for upload.
+
+    This is an alternative to the remux path. Uploading audio only avoids the
+    moov-atom/pipe problem entirely (the container is rebuilt from a full
+    decode, so there is nothing left to seek) and hands Subgen exactly the
+    format Whisper resamples to anyway, so no quality is lost. PCM is a fixed
+    ~110 MB/hour regardless of source bitrate — a large win for typical video,
+    though it can exceed the source on very low-bitrate or short clips.
+
+    Args:
+        file_path: Path to the original video file
+
+    Returns:
+        Path to the temporary WAV file, or None if extraction failed
+    """
+    log_info(f"Extracting audio track locally: {os.path.basename(file_path)}")
+
+    temp_path = None
+    try:
+        temp_fd, temp_path = tempfile.mkstemp(suffix='.wav', prefix='subgen_audio_')
+        os.close(temp_fd)  # Close fd, we'll let ffmpeg write to it
+
+        log_debug(f"Extracting audio to temp file: {temp_path}")
+
+        # -vn                = drop video
+        # -c:a pcm_s16le     = uncompressed PCM (no encoder overhead)
+        # -ar 16000 -ac 1    = 16 kHz mono, exactly what Whisper wants
+        # stdin=DEVNULL      = ffmpeg reads stdin by default and would otherwise
+        #                      consume/block on the Stash plugin protocol pipe
+        result = subprocess.run(
+            [
+                FFMPEG_PATH,
+                '-v', 'error',
+                '-i', file_path,
+                '-vn',
+                '-c:a', 'pcm_s16le',
+                '-ar', '16000',
+                '-ac', '1',
+                '-y',  # Overwrite output
+                temp_path
+            ],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=1800  # 30 minute safety fallback (full decode of long files)
+        )
+
+        if result.returncode == 0:
+            # Verify temp file exists and has content
+            if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
+                size_mb = os.path.getsize(temp_path) / (1024 * 1024)
+                log_info(f"✓ Audio extraction successful ({size_mb:.1f} MB): {os.path.basename(temp_path)}")
+                return temp_path
+            else:
+                log_error("Audio extraction produced empty file")
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                return None
+        else:
+            error_msg = result.stderr.decode('utf-8', errors='ignore').strip()
+            log_error(f"Audio extraction failed: {error_msg[:200]}")
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            return None
+
+    except subprocess.TimeoutExpired as e:
+        stderr_output = ""
+        if e.stderr:
+            stderr_output = f" FFmpeg output: {e.stderr.decode('utf-8', errors='ignore').strip()[-500:]}"
+        log_error(f"Audio extraction timed out after 30 minutes.{stderr_output}")
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
+        return None
+    except Exception as e:
+        log_error(f"Audio extraction error: {e}")
+        # Clean up temp file on ANY exception (OSError, etc.)
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except:
+                pass
+        return None
 
 
 def check_pipe_compatibility(file_path):
@@ -168,6 +255,7 @@ def remux_for_pipe_compatibility(file_path, create_backup=False):
                 temp_path
             ],
             capture_output=True,
+            stdin=subprocess.DEVNULL,  # Don't let ffmpeg consume the plugin's stdin pipe
             timeout=300  # 5 minute timeout
         )
         
@@ -487,47 +575,68 @@ def trigger_stash_scan(file_path):
         log_warning(f"Scan trigger error: {e}")
 
 
-def call_subgen_webhook(file_path, auto_fix_pipe_issues=False, create_backup=False, translate_to_english=True):
+def call_subgen_webhook(file_path, extract_audio=False, auto_fix_pipe_issues=False,
+                        create_backup=False, translate_to_english=True):
     """Call Subgen /asr endpoint to generate subtitles for a single file"""
     basename = os.path.basename(file_path)
     log_info(f"Starting subtitle generation for: {basename}")
     log_info("Note: Processing time varies by video length (typically 1-10 minutes)")
-    
+
     # Verify file exists in Stash container
     if not os.path.isfile(file_path):
         raise Exception(f"File not found in Stash container: {file_path}")
-    
-    # Check pipe compatibility and auto-fix if enabled
-    remuxed_temp_file = None
+
+    # Prepare the upload. Two mutually exclusive strategies:
+    #   1. extract_audio    — upload an audio-only WAV (preferred; also makes the
+    #                         pipe-compatibility problem moot, so the remux path
+    #                         is skipped entirely when this is on)
+    #   2. auto_fix_pipe_issues — upload the video, remuxing first if it fails
+    #                         the pipe test
+    temp_upload_file = None
     actual_file_to_upload = file_path
-    
-    if auto_fix_pipe_issues:
+
+    if extract_audio:
+        log_info("Local audio extraction enabled: uploading audio only")
+        temp_upload_file = extract_audio_for_subgen(file_path)
+
+        if temp_upload_file:
+            actual_file_to_upload = temp_upload_file
+            log_info("Using locally extracted audio for upload")
+        else:
+            log_error("Audio extraction failed, will attempt upload with original file anyway")
+            actual_file_to_upload = file_path
+    elif auto_fix_pipe_issues:
         log_info("Checking pipe compatibility...")
         is_compatible = check_pipe_compatibility(file_path)
-        
+
         if not is_compatible:
             log_warning("File has pipe compatibility issues (moov atom positioning)")
             log_info("Auto-fix enabled: remuxing file to fix compatibility...")
-            
-            remuxed_temp_file = remux_for_pipe_compatibility(file_path, create_backup)
-            
-            if remuxed_temp_file:
-                actual_file_to_upload = remuxed_temp_file
+
+            temp_upload_file = remux_for_pipe_compatibility(file_path, create_backup)
+
+            if temp_upload_file:
+                actual_file_to_upload = temp_upload_file
                 log_info(f"Using remuxed file for upload")
             else:
                 log_error("Remux failed, will attempt upload with original file anyway")
                 actual_file_to_upload = file_path
         else:
             log_info("✓ File is pipe-compatible, no remux needed")
-    
+
     # Use /asr endpoint - expects multipart file upload with 'audio_file' field
     webhook_url = f"{SUBGEN_WEBHOOK_URL}/asr"
-    
+
     try:
-        # Open and upload the actual file (original or remuxed)
+        # Open and upload the actual file (original, extracted audio, or remuxed).
+        # Name the part after the file actually being sent and derive its content
+        # type from that name — a hardcoded video/mp4 would mislabel both the
+        # extracted .wav and non-MP4 sources (.mkv, .avi, ...).
+        upload_name = os.path.basename(actual_file_to_upload)
+        content_type = mimetypes.guess_type(upload_name)[0] or 'application/octet-stream'
         with open(actual_file_to_upload, 'rb') as f:
             files = {
-                'audio_file': (os.path.basename(file_path), f, 'video/mp4')
+                'audio_file': (upload_name, f, content_type)
             }
             # Subgen API parameters - MUST be query parameters, not form data
             # language is omitted entirely so Whisper auto-detects the source language.
@@ -542,7 +651,7 @@ def call_subgen_webhook(file_path, auto_fix_pipe_issues=False, create_backup=Fal
                 'encode': True,        # Process the uploaded file
             }
             log_info(f"Whisper task: {whisper_task} ({'English output' if translate_to_english else 'native language output'})")
-            
+
             log_info("Uploading to Subgen and generating subtitles...")
             
             response = requests.post(
@@ -594,11 +703,11 @@ def call_subgen_webhook(file_path, auto_fix_pipe_issues=False, create_backup=Fal
         raise Exception(f"Subgen webhook call failed: {e}")
     
     finally:
-        # Clean up temporary remuxed file if it was created
-        if remuxed_temp_file and os.path.exists(remuxed_temp_file):
+        # Clean up the temporary upload file (extracted audio or remux) if created
+        if temp_upload_file and os.path.exists(temp_upload_file):
             try:
-                os.remove(remuxed_temp_file)
-                log_debug(f"Cleaned up temp file: {os.path.basename(remuxed_temp_file)}")
+                os.remove(temp_upload_file)
+                log_debug(f"Cleaned up temp file: {os.path.basename(temp_upload_file)}")
             except Exception as e:
                 log_warning(f"Could not delete temp file: {e}")
 
@@ -809,9 +918,15 @@ def main():
             # strings, so "false" must not be treated as truthy (matches the
             # single-scene generate path below).
             skip_existing = _coerce_bool(settings.get("skipExistingSubtitles", False))
+            extract_audio = _coerce_bool(settings.get("extractAudioLocally", False))
             auto_fix_pipe_issues = _coerce_bool(settings.get("autoFixPipeIssues", False))
             create_backup = _coerce_bool(settings.get("createBackupFiles", False))
             translate_to_english = _coerce_bool(settings.get("translateToEnglish", True))
+
+            if extract_audio:
+                log_info("Local audio extraction enabled (supersedes remux/pipe auto-fix)")
+            elif auto_fix_pipe_issues:
+                log_info("Auto-fix pipe compatibility enabled")
 
             # Trigger tag name, defaulting to 'subgen_me' when unset/blank
             tag_name = settings.get("batchTagName", "")
@@ -851,6 +966,7 @@ def main():
                         scene_data = query_scene_file_path(s_id)
                         call_subgen_webhook(
                             scene_data["file_path"],
+                            extract_audio=extract_audio,
                             auto_fix_pipe_issues=auto_fix_pipe_issues,
                             create_backup=create_backup,
                             translate_to_english=translate_to_english
@@ -889,21 +1005,25 @@ def main():
 
             # Get settings from args (passed from JavaScript)
             # Note: Stash <0.23.0 passes booleans as strings, so coerce both
+            extract_audio = _coerce_bool(args.get("extract_audio_locally", False))
             auto_fix_pipe_issues = _coerce_bool(args.get("auto_fix_pipe_issues", False))
             create_backup = _coerce_bool(args.get("create_backup", False))
             translate_to_english = _coerce_bool(args.get("translate_to_english", True))
 
-            if auto_fix_pipe_issues:
+            if extract_audio:
+                log_info("Local audio extraction enabled (supersedes remux/pipe auto-fix)")
+            elif auto_fix_pipe_issues:
                 log_info("Auto-fix pipe compatibility enabled")
                 if create_backup:
                     log_info("Backup creation enabled")
-            
+
             # Step 1: Query scene file path from Stash
             scene_data = query_scene_file_path(scene_id)
-            
-            # Step 2: Call Subgen webhook (with optional auto-fix and backup)
+
+            # Step 2: Call Subgen webhook (with optional audio extraction / remux)
             webhook_result = call_subgen_webhook(
                 scene_data["file_path"],
+                extract_audio=extract_audio,
                 auto_fix_pipe_issues=auto_fix_pipe_issues,
                 create_backup=create_backup,
                 translate_to_english=translate_to_english

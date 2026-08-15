@@ -1,6 +1,6 @@
 name: Subgen
 description: Generates subtitles for scenes via Subgen webhook integration
-version: 3.6.0
+version: 3.7.0
 url: https://github.com/feldorn/stash-subgen-integration
 interface: raw
 
@@ -33,19 +33,23 @@ settings:
     type: STRING
   ffmpegPath:
     displayName: FFmpeg Binary Path
-    description: "Path to the ffmpeg binary used for the pipe-compatibility check and remux (default: ffmpeg on PATH). Set this to a newer ffmpeg if your system's is too old for '-movflags +faststart' (e.g. native/QNAP Stash installs)."
+    description: "Path to the ffmpeg binary used for local audio extraction, the pipe-compatibility check and remux (default: ffmpeg on PATH). Set this to a newer ffmpeg if your system's is too old for '-movflags +faststart' (e.g. native/QNAP Stash installs)."
     type: STRING
   debugLogging:
     displayName: Debug Logging
     description: "Enable verbose debug logging to browser console"
     type: BOOLEAN
+  extractAudioLocally:
+    displayName: Extract Audio Locally
+    description: "Extract the audio track to a 16 kHz mono WAV with ffmpeg and upload that instead of the full video (~110 MB/hour, versus several GB for a typical film). Less work for the Subgen container and no quality loss — Whisper resamples to this format anyway. Also makes pipe/moov-atom problems moot, so it supersedes 'Auto-fix Pipe Compatibility Issues' when both are enabled. Requires a working ffmpeg (see FFmpeg Binary Path)."
+    type: BOOLEAN
   autoFixPipeIssues:
     displayName: Auto-fix Pipe Compatibility Issues
-    description: "Automatically remux MP4 files that fail ffmpeg pipe compatibility check (recommended)"
+    description: "Automatically remux MP4 files that fail ffmpeg pipe compatibility check (recommended). Ignored when 'Extract Audio Locally' is enabled."
     type: BOOLEAN
   createBackupFiles:
     displayName: Create Backup Files
-    description: "Create .bak backup of original files before remuxing (for testing/safety)"
+    description: "Create .bak backup of original files before remuxing (for testing/safety). Only applies to the remux path — local audio extraction never touches the original file."
     type: BOOLEAN
   translateToEnglish:
     displayName: Translate to English
