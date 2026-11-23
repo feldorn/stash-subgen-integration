@@ -162,6 +162,55 @@ def extract_audio_for_subgen(file_path):
         return None
 
 
+def has_audio_stream(file_path):
+    """
+    Check whether the file contains at least one audio stream.
+
+    Uses `ffmpeg -i` (not ffprobe, which a custom ffmpegPath may not ship
+    alongside) and looks for an "Audio:" stream line in its stream listing.
+    No decoding happens, so this is fast even for long files.
+
+    Returns:
+        True if an audio stream is present, False if definitely none,
+        None if the check could not be performed (caller should proceed).
+    """
+    try:
+        # With no output file ffmpeg exits non-zero, but still prints the
+        # stream listing to stderr — that listing is all we need.
+        result = subprocess.run(
+            [FFMPEG_PATH, '-hide_banner', '-i', file_path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=60
+        )
+        info = result.stderr.decode('utf-8', errors='ignore')
+        if 'Stream #' not in info:
+            log_warning(f"Could not read stream info: {info.strip()[:200]}")
+            return None
+        return any('Stream #' in line and 'Audio:' in line for line in info.splitlines())
+    except Exception as e:
+        log_warning(f"Could not check for audio stream: {e}")
+        return None
+
+
+def parse_subgen_error(body):
+    """
+    Subgen's /asr returns HTTP 200 even when transcription fails, with a JSON
+    body like {"status": "error", "message": "..."} instead of SRT text.
+    Returns the error message if the body is such an error, else None.
+    """
+    stripped = body.lstrip()
+    if not stripped.startswith('{'):
+        return None
+    try:
+        data = json.loads(stripped)
+    except ValueError:
+        return None
+    if isinstance(data, dict) and (data.get('status') == 'error' or 'error' in data):
+        return str(data.get('message') or data.get('error') or data)
+    return None
+
+
 def check_pipe_compatibility(file_path):
     """
     Test if a file works through ffmpeg pipe (non-seekable input).
@@ -587,6 +636,11 @@ def call_subgen_webhook(file_path, extract_audio=False, auto_fix_pipe_issues=Fal
     if not os.path.isfile(file_path):
         raise Exception(f"File not found in Stash container: {file_path}")
 
+    # Fail fast on files with no audio track — Subgen would otherwise crash
+    # inside its decoder ("tuple index out of range") after the full upload.
+    if has_audio_stream(file_path) is False:
+        raise Exception(f"No audio track in {basename} — nothing to transcribe")
+
     # Prepare the upload. Two mutually exclusive strategies:
     #   1. extract_audio    — upload an audio-only WAV (preferred; also makes the
     #                         pipe-compatibility problem moot, so the remux path
@@ -682,7 +736,16 @@ def call_subgen_webhook(file_path, extract_audio=False, auto_fix_pipe_issues=Fal
         if not srt_content or len(srt_content) < 10:
             log_error("Subgen returned empty or invalid response")
             raise Exception("Subgen failed to generate subtitles - empty response received")
-        
+
+        # Subgen reports failures as HTTP 200 + JSON error body; never write
+        # that (or anything else that isn't SRT) out as a subtitle file.
+        subgen_error = parse_subgen_error(srt_content)
+        if subgen_error:
+            raise Exception(f"Subgen failed to generate subtitles: {subgen_error}")
+        if '-->' not in srt_content:
+            log_debug(f"Unexpected Subgen response: {srt_content[:200]}")
+            raise Exception("Subgen response is not valid SRT (no timestamp lines)")
+
         # Save SRT file next to the ORIGINAL video file (not temp file).
         # translate mode always outputs English → .eng.srt
         # transcribe mode → .en.srt so Stash tags the language (Subgen runs with

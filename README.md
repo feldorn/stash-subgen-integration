@@ -1,6 +1,6 @@
 # Subgen Integration Plugin for Stash
 
-**Version:** 3.8.0
+**Version:** 3.8.1
 
 A [Stash](https://github.com/stashapp/stash) plugin that integrates with [Subgen](https://github.com/McCloudS/subgen) to automatically generate subtitles for your media library scenes.
 
